@@ -55,12 +55,23 @@ discord_channel_name: "pillar-personal"
 daily_brief_time: "08:30"
 quiet_hours_start: "22:00"
 quiet_hours_end: "07:00"
+daily_brief_enabled: false
+onboarding_status: in_progress
+onboarding_step: mission
+onboarding_started_at: "2026-02-27T09:30:00+05:30"
+onboarding_completed_at: null
+review_tracking_started_at: null
 last_weekly_review_at: null
 last_monthly_review_at: null
 last_quarterly_review_at: null
 last_yearly_review_at: null
 updated_at: "2026-02-27T09:30:00+05:30"
 ```
+
+Onboarding lifecycle enums:
+
+1. `onboarding_status`: `in_progress` | `completed`
+2. `onboarding_step`: `mission` | `scope` | `success_signals` | `completed`
 
 ## `manifesto.md` Frontmatter
 

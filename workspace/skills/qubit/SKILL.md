@@ -34,7 +34,8 @@ python3 workspace/skills/qubit/scripts/qubit.py <subcommand> [flags]
 Primary subcommands:
 
 1. `onboard`
-Create or repair the pillar structure, write metadata, seed manifesto/journal files, and upsert daily brief cron.
+Create or repair the pillar structure, seed manifesto/journal files, and start conversational onboarding.
+Do not enable daily brief cron until onboarding is completed.
 2. `add-project`
 Create or update `/projects/<project-slug>/project.md`.
 3. `daily-brief`
@@ -45,6 +46,7 @@ Write weekly review summary to journal and reset weekly rolling cadence timestam
 Parse one Discord message into zero-to-many actions and apply policy.
 6. `due-scan`
 Scan active pillars for overdue reminders and due rolling loops.
+Skip loop prompts for pillars with incomplete onboarding or missing review tracking baseline.
 7. `mark-loop`
 Mark a loop run (`weekly|monthly|quarterly|yearly`) as completed.
 8. `sync-cron`
@@ -68,6 +70,8 @@ Support and prioritize these forms:
 3. Include only `active` pillars in heartbeat due scans and loop prompts.
 4. Skip non-urgent loop prompts during quiet hours.
 5. Do not create daily brief cron until a valid Discord channel ID exists.
+6. Do not create daily brief cron until onboarding is completed.
+7. During onboarding, process one strategic question per turn and save draft manifesto updates each turn.
 
 ## Meta Loop Rules
 
@@ -79,7 +83,8 @@ Run rolling cadences from last execution timestamp:
 3. Quarterly: 90 days
 4. Yearly: 365 days
 
-If multiple loop cadences are due on the same day, run only the highest cadence.
+Start automated loop prompts only after first real completed review (`review_tracking_started_at`).
+If multiple loop cadences are due on the same day, run the nearest cadence first (`weekly -> monthly -> quarterly -> yearly`).
 If runs were missed, run once at next opportunity and roll forward from actual run time.
 
 ## References

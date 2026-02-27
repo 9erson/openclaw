@@ -25,11 +25,53 @@ LOOP_DAYS = {
     "quarterly": 90,
     "yearly": 365,
 }
-LOOP_PRIORITY = ("yearly", "quarterly", "monthly", "weekly")
+LOOP_PRIORITY = ("weekly", "monthly", "quarterly", "yearly")
 DEFAULT_TIMEZONE = "Asia/Kolkata"
 DEFAULT_DAILY_BRIEF_TIME = "08:30"
 DEFAULT_QUIET_HOURS_START = "22:00"
 DEFAULT_QUIET_HOURS_END = "07:00"
+ONBOARDING_STATUSES = ("in_progress", "completed")
+ONBOARDING_STEPS = ("mission", "scope", "success_signals", "completed")
+MANIFESTO_PLACEHOLDER_MISSION = "Define the enduring mission for this pillar."
+MANIFESTO_PLACEHOLDER_SCOPE = "Define in-scope and out-of-scope boundaries."
+MANIFESTO_PLACEHOLDER_NON_NEGOTIABLE = "Document non-negotiable principles."
+MANIFESTO_PLACEHOLDER_SUCCESS_SIGNAL = "Define measurable success signals."
+MANIFESTO_DEFAULT_BODY = (
+    "## Purpose\n\n"
+    "Describe why this pillar exists and what long-term outcomes matter.\n\n"
+    "## Evergreen Principles\n\n"
+    "Capture durable strategy and operating constraints.\n"
+)
+ONBOARDING_DRAFT_START = "<!-- qubit:onboarding-draft:start -->"
+ONBOARDING_DRAFT_END = "<!-- qubit:onboarding-draft:end -->"
+ONBOARDING_QUESTIONS = {
+    "mission": (
+        "What is the core mission of this pillar for the next 12 months? "
+        "Answer in 1-2 concrete sentences."
+    ),
+    "scope": (
+        "What belongs in this pillar, and what is explicitly out of scope? "
+        "Be concrete so decisions are easier later."
+    ),
+    "success_signals": (
+        "List 2-4 concrete success signals for this pillar. "
+        "Use measurable or clearly observable outcomes."
+    ),
+}
+ONBOARDING_FOLLOWUPS = {
+    "mission": (
+        "I need this to be more specific. What durable outcome should this pillar create "
+        "by the end of the year?"
+    ),
+    "scope": (
+        "This is still too vague. Name the key responsibilities this pillar owns and one thing "
+        "it must not absorb."
+    ),
+    "success_signals": (
+        "Please give at least two concrete success signals (for example metrics, milestones, or "
+        "observable behaviors)."
+    ),
+}
 
 
 class QubitError(RuntimeError):
@@ -164,6 +206,264 @@ def write_pillar_meta(pillar_dir: Path, meta: dict[str, Any], body: str) -> None
     write_markdown(pillar_dir / "pillar.md", meta, body)
 
 
+def normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [normalize_text(item) for item in value if normalize_text(item)]
+    if value is None:
+        return []
+    text = normalize_text(value)
+    if not text:
+        return []
+    tokens = []
+    for chunk in re.split(r"[\n,;]+", text):
+        candidate = normalize_text(re.sub(r"^[-*0-9.\s]+", "", chunk))
+        if candidate:
+            tokens.append(candidate)
+    return tokens
+
+
+def is_placeholder_scalar(value: str) -> bool:
+    lowered = normalize_text(value).lower()
+    if not lowered:
+        return True
+    placeholders = {
+        "...",
+        "tbd",
+        "todo",
+        "n/a",
+        "na",
+        "none",
+        MANIFESTO_PLACEHOLDER_MISSION.lower(),
+        MANIFESTO_PLACEHOLDER_SCOPE.lower(),
+        MANIFESTO_PLACEHOLDER_NON_NEGOTIABLE.lower(),
+        MANIFESTO_PLACEHOLDER_SUCCESS_SIGNAL.lower(),
+    }
+    if lowered in placeholders:
+        return True
+    if lowered.startswith("define "):
+        return True
+    return False
+
+
+def is_meaningful_sentence(value: Any, minimum_words: int = 6, minimum_chars: int = 24) -> bool:
+    text = normalize_text(value)
+    if is_placeholder_scalar(text):
+        return False
+    if len(text) < minimum_chars:
+        return False
+    if len([token for token in text.split(" ") if token]) < minimum_words:
+        return False
+    return True
+
+
+def is_meaningful_success_signals(value: Any, minimum_count: int = 2) -> bool:
+    signals = coerce_string_list(value)
+    meaningful = [signal for signal in signals if is_meaningful_sentence(signal, minimum_words=3, minimum_chars=12)]
+    return len(meaningful) >= minimum_count
+
+
+def infer_onboarding_step_from_manifesto(manifesto_fm: dict[str, Any]) -> str:
+    if not is_meaningful_sentence(manifesto_fm.get("mission")):
+        return "mission"
+    if not is_meaningful_sentence(manifesto_fm.get("scope")):
+        return "scope"
+    if not is_meaningful_success_signals(manifesto_fm.get("success_signals"), minimum_count=2):
+        return "success_signals"
+    return "completed"
+
+
+def infer_onboarding_status_from_manifesto(manifesto_fm: dict[str, Any], manifesto_body: str) -> str:
+    step = infer_onboarding_step_from_manifesto(manifesto_fm)
+    if step == "completed":
+        return "completed"
+    body_text = normalize_text(manifesto_body)
+    if not body_text or normalize_text(MANIFESTO_DEFAULT_BODY) == body_text:
+        return "in_progress"
+    return "in_progress"
+
+
+def ensure_lifecycle_meta(
+    pillar_dir: Path,
+    meta: dict[str, Any],
+    body: str,
+    tz_name: str,
+    *,
+    persist: bool,
+) -> tuple[dict[str, Any], str, bool]:
+    manifesto_fm, manifesto_body = read_markdown(pillar_dir / "manifesto.md")
+    inferred_status = infer_onboarding_status_from_manifesto(manifesto_fm, manifesto_body)
+    inferred_step = infer_onboarding_step_from_manifesto(manifesto_fm)
+    changed = False
+
+    onboarding_status = normalize_text(meta.get("onboarding_status"))
+    if onboarding_status not in ONBOARDING_STATUSES:
+        onboarding_status = inferred_status
+        meta["onboarding_status"] = onboarding_status
+        changed = True
+
+    onboarding_step = normalize_text(meta.get("onboarding_step"))
+    if onboarding_status == "completed":
+        if onboarding_step != "completed":
+            meta["onboarding_step"] = "completed"
+            changed = True
+    else:
+        if onboarding_step not in ONBOARDING_STEPS or onboarding_step == "completed":
+            meta["onboarding_step"] = inferred_step if inferred_step != "completed" else "mission"
+            changed = True
+
+    if onboarding_status == "completed":
+        if not meta.get("onboarding_completed_at"):
+            meta["onboarding_completed_at"] = meta.get("updated_at") or now_iso(tz_name)
+            changed = True
+        if meta.get("onboarding_started_at") is None:
+            meta["onboarding_started_at"] = meta.get("onboarding_completed_at")
+            changed = True
+        if meta.get("daily_brief_enabled") is not True:
+            meta["daily_brief_enabled"] = True
+            changed = True
+    else:
+        if not meta.get("onboarding_started_at"):
+            meta["onboarding_started_at"] = meta.get("updated_at") or now_iso(tz_name)
+            changed = True
+        if meta.get("onboarding_completed_at") is not None:
+            meta["onboarding_completed_at"] = None
+            changed = True
+        if meta.get("daily_brief_enabled") is not False:
+            meta["daily_brief_enabled"] = False
+            changed = True
+
+    if "review_tracking_started_at" not in meta:
+        meta["review_tracking_started_at"] = None
+        changed = True
+
+    if changed:
+        meta["updated_at"] = now_iso(tz_name)
+        if persist:
+            write_pillar_meta(pillar_dir, meta, body)
+
+    return meta, body, changed
+
+
+def next_onboarding_step(step: str) -> str:
+    if step == "mission":
+        return "scope"
+    if step == "scope":
+        return "success_signals"
+    return "completed"
+
+
+def onboarding_question_for_step(step: str, followup: bool = False) -> str:
+    if followup:
+        return ONBOARDING_FOLLOWUPS.get(step, ONBOARDING_QUESTIONS["mission"])
+    return ONBOARDING_QUESTIONS.get(step, ONBOARDING_QUESTIONS["mission"])
+
+
+def parse_success_signal_answer(answer: str) -> list[str]:
+    return coerce_string_list(answer)
+
+
+def validate_onboarding_answer(step: str, answer: str) -> tuple[bool, Any]:
+    cleaned = normalize_text(answer)
+    if step in ("mission", "scope"):
+        if not is_meaningful_sentence(cleaned):
+            return False, cleaned
+        return True, cleaned
+
+    if step == "success_signals":
+        signals = parse_success_signal_answer(answer)
+        meaningful = [signal for signal in signals if is_meaningful_sentence(signal, minimum_words=3, minimum_chars=12)]
+        if len(meaningful) < 2:
+            return False, signals
+        return True, meaningful
+
+    return False, cleaned
+
+
+def render_onboarding_draft_block(mission: str, scope: str, success_signals: list[str]) -> str:
+    lines = [
+        ONBOARDING_DRAFT_START,
+        "## Onboarding Draft",
+        "",
+        f"- Mission: {mission if mission else '_pending_'}",
+        f"- Scope: {scope if scope else '_pending_'}",
+        "- Success Signals:",
+    ]
+    if success_signals:
+        for signal in success_signals:
+            lines.append(f"  - {signal}")
+    else:
+        lines.append("  - _pending_")
+    lines.append(ONBOARDING_DRAFT_END)
+    return "\n".join(lines)
+
+
+def upsert_onboarding_draft_block(body: str, mission: str, scope: str, success_signals: list[str]) -> str:
+    draft_block = render_onboarding_draft_block(mission=mission, scope=scope, success_signals=success_signals)
+    stripped = body.strip()
+    if not stripped:
+        return draft_block + "\n"
+
+    pattern = re.compile(
+        re.escape(ONBOARDING_DRAFT_START) + r".*?" + re.escape(ONBOARDING_DRAFT_END),
+        re.DOTALL,
+    )
+    if pattern.search(stripped):
+        updated = pattern.sub(draft_block, stripped)
+        return updated.rstrip() + "\n"
+
+    return stripped.rstrip() + "\n\n" + draft_block + "\n"
+
+
+def persist_onboarding_manifesto_value(
+    pillar_dir: Path,
+    pillar_slug: str,
+    tz_name: str,
+    step: str,
+    value: Any,
+) -> None:
+    manifesto_path = pillar_dir / "manifesto.md"
+    manifesto_fm, manifesto_body = read_markdown(manifesto_path)
+
+    manifesto_fm["pillar_slug"] = pillar_slug
+    manifesto_fm["schema_version"] = 1
+    manifesto_fm["updated_at"] = now_iso(tz_name)
+    manifesto_fm["mission"] = normalize_text(manifesto_fm.get("mission")) or MANIFESTO_PLACEHOLDER_MISSION
+    manifesto_fm["scope"] = normalize_text(manifesto_fm.get("scope")) or MANIFESTO_PLACEHOLDER_SCOPE
+    manifesto_fm["non_negotiables"] = coerce_string_list(manifesto_fm.get("non_negotiables")) or [
+        MANIFESTO_PLACEHOLDER_NON_NEGOTIABLE
+    ]
+    manifesto_fm["success_signals"] = coerce_string_list(manifesto_fm.get("success_signals")) or [
+        MANIFESTO_PLACEHOLDER_SUCCESS_SIGNAL
+    ]
+    manifesto_fm["review_cadence"] = normalize_text(manifesto_fm.get("review_cadence")) or "quarterly"
+
+    if step in ("mission", "scope"):
+        manifesto_fm[step] = normalize_text(value)
+    elif step == "success_signals":
+        manifesto_fm["success_signals"] = coerce_string_list(value)
+
+    if not manifesto_body.strip():
+        manifesto_body = MANIFESTO_DEFAULT_BODY
+
+    mission = normalize_text(manifesto_fm.get("mission"))
+    scope = normalize_text(manifesto_fm.get("scope"))
+    success_signals = coerce_string_list(manifesto_fm.get("success_signals"))
+    manifesto_body = upsert_onboarding_draft_block(
+        body=manifesto_body,
+        mission=mission,
+        scope=scope,
+        success_signals=success_signals,
+    )
+
+    write_markdown(manifesto_path, manifesto_fm, manifesto_body)
+
+
 def ensure_required_pillar_layout(pillar_dir: Path) -> dict[str, list[str]]:
     created_files: list[str] = []
     created_dirs: list[str] = []
@@ -194,10 +494,10 @@ def ensure_manifesto(pillar_dir: Path, pillar_slug: str, tz_name: str) -> bool:
         "pillar_slug": pillar_slug,
         "schema_version": 1,
         "updated_at": now_iso(tz_name),
-        "mission": fm.get("mission") or "Define the enduring mission for this pillar.",
-        "scope": fm.get("scope") or "Define in-scope and out-of-scope boundaries.",
-        "non_negotiables": fm.get("non_negotiables") or ["Document non-negotiable principles."],
-        "success_signals": fm.get("success_signals") or ["Define measurable success signals."],
+        "mission": fm.get("mission") or MANIFESTO_PLACEHOLDER_MISSION,
+        "scope": fm.get("scope") or MANIFESTO_PLACEHOLDER_SCOPE,
+        "non_negotiables": fm.get("non_negotiables") or [MANIFESTO_PLACEHOLDER_NON_NEGOTIABLE],
+        "success_signals": fm.get("success_signals") or [MANIFESTO_PLACEHOLDER_SUCCESS_SIGNAL],
         "review_cadence": fm.get("review_cadence") or "quarterly",
     }
 
@@ -207,12 +507,7 @@ def ensure_manifesto(pillar_dir: Path, pillar_slug: str, tz_name: str) -> bool:
             changed = True
 
     if not body.strip():
-        body = (
-            "## Purpose\n\n"
-            "Describe why this pillar exists and what long-term outcomes matter.\n\n"
-            "## Evergreen Principles\n\n"
-            "Capture durable strategy and operating constraints.\n"
-        )
+        body = MANIFESTO_DEFAULT_BODY
         changed = True
 
     if changed:
@@ -238,7 +533,10 @@ def ensure_monthly_journal(pillar_dir: Path, pillar_slug: str, tz_name: str) -> 
     return journal_path
 
 
-def parse_pillar_from_channel(workspace: Path, channel_id: str) -> tuple[str, Path, dict[str, Any]] | tuple[None, None, None]:
+def parse_pillar_from_channel(
+    workspace: Path,
+    channel_id: str,
+) -> tuple[str, Path, dict[str, Any], str] | tuple[None, None, None, None]:
     for status in STATUSES:
         status_root = pillars_root(workspace) / status
         if not status_root.exists():
@@ -249,10 +547,10 @@ def parse_pillar_from_channel(workspace: Path, channel_id: str) -> tuple[str, Pa
             pillar_md = pillar_dir / "pillar.md"
             if not pillar_md.exists():
                 continue
-            meta, _ = read_markdown(pillar_md)
+            meta, body = read_markdown(pillar_md)
             if str(meta.get("discord_channel_id")) == str(channel_id):
-                return pillar_dir.name, pillar_dir, meta
-    return None, None, None
+                return pillar_dir.name, pillar_dir, meta, body
+    return None, None, None, None
 
 
 def normalize_channel_name(pillar_slug: str) -> str:
@@ -399,13 +697,18 @@ def append_reminder(reminders_file: Path, reminder: dict[str, Any]) -> None:
         handle.write(json.dumps(reminder, ensure_ascii=True) + "\n")
 
 
-def get_or_create_pillar_by_slug(workspace: Path, pillar_slug: str) -> tuple[Path, dict[str, Any]]:
+def get_or_create_pillar_state_by_slug(workspace: Path, pillar_slug: str) -> tuple[Path, dict[str, Any], str]:
     pillar_dir, _status = find_pillar_dir(workspace, pillar_slug)
     if not pillar_dir:
         raise QubitError(
             f"Pillar '{pillar_slug}' not found. Run onboarding first with: qubit {pillar_slug} onboard"
         )
-    meta, _ = load_pillar_meta(pillar_dir)
+    meta, body = load_pillar_meta(pillar_dir)
+    return pillar_dir, meta, body
+
+
+def get_or_create_pillar_by_slug(workspace: Path, pillar_slug: str) -> tuple[Path, dict[str, Any]]:
+    pillar_dir, meta, _ = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
     return pillar_dir, meta
 
 
@@ -773,6 +1076,121 @@ def apply_action(workspace: Path, pillar_slug: str, meta: dict[str, Any], action
     raise QubitError(f"Unsupported action type: {action.action_type}")
 
 
+def run_onboarding_turn(
+    workspace: Path,
+    pillar_dir: Path,
+    pillar_slug: str,
+    meta: dict[str, Any],
+    pillar_body: str,
+    message: str,
+) -> dict[str, Any]:
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    cleaned_message = normalize_text(message)
+    step = normalize_text(meta.get("onboarding_step")) or "mission"
+    if step not in ONBOARDING_STEPS or step == "completed":
+        manifesto_fm, _ = read_markdown(pillar_dir / "manifesto.md")
+        step = infer_onboarding_step_from_manifesto(manifesto_fm)
+        if step == "completed":
+            step = "mission"
+
+    if not cleaned_message:
+        return {
+            "status": "ok",
+            "workflow": "onboarding-turn",
+            "pillar_slug": pillar_slug,
+            "captured_field": None,
+            "onboarding_status": "in_progress",
+            "completed": False,
+            "question": onboarding_question_for_step(step),
+        }
+
+    accepted, parsed_value = validate_onboarding_answer(step, cleaned_message)
+    if not accepted:
+        return {
+            "status": "ok",
+            "workflow": "onboarding-turn",
+            "pillar_slug": pillar_slug,
+            "captured_field": None,
+            "onboarding_status": "in_progress",
+            "completed": False,
+            "question": onboarding_question_for_step(step, followup=True),
+        }
+
+    persist_onboarding_manifesto_value(
+        pillar_dir=pillar_dir,
+        pillar_slug=pillar_slug,
+        tz_name=tz_name,
+        step=step,
+        value=parsed_value,
+    )
+
+    rendered_capture = (
+        "\n".join(f"- {item}" for item in parsed_value)
+        if isinstance(parsed_value, list)
+        else str(parsed_value)
+    )
+    append_journal_entry(
+        pillar_dir=pillar_dir,
+        pillar_slug=pillar_slug,
+        tz_name=tz_name,
+        entry=f"Onboarding captured `{step}`:\n\n{rendered_capture}",
+        source="onboarding",
+    )
+
+    next_step = next_onboarding_step(step)
+    timestamp = now_iso(tz_name)
+
+    if next_step != "completed":
+        meta["onboarding_status"] = "in_progress"
+        meta["onboarding_step"] = next_step
+        meta["updated_at"] = timestamp
+        write_pillar_meta(pillar_dir, meta, pillar_body)
+        return {
+            "status": "ok",
+            "workflow": "onboarding-turn",
+            "pillar_slug": pillar_slug,
+            "captured_field": step,
+            "onboarding_status": "in_progress",
+            "completed": False,
+            "question": onboarding_question_for_step(next_step),
+        }
+
+    meta["onboarding_status"] = "completed"
+    meta["onboarding_step"] = "completed"
+    if not meta.get("onboarding_started_at"):
+        meta["onboarding_started_at"] = timestamp
+    meta["onboarding_completed_at"] = timestamp
+    meta["daily_brief_enabled"] = True
+    meta["updated_at"] = timestamp
+    write_pillar_meta(pillar_dir, meta, pillar_body)
+
+    cron_info: dict[str, Any] = {
+        "action": "skipped",
+        "reason": "missing_channel_binding",
+        "store": str(cron_store_path(workspace)),
+    }
+    if str(meta.get("discord_channel_id") or "").strip():
+        cron_path = cron_store_path(workspace)
+        ensure_dir(cron_path.parent)
+        cron_action, cron_job_id = upsert_daily_brief_job(cron_path, meta)
+        cron_info = {
+            "action": cron_action,
+            "jobId": cron_job_id,
+            "store": str(cron_path),
+        }
+
+    return {
+        "status": "ok",
+        "workflow": "onboarding-turn",
+        "pillar_slug": pillar_slug,
+        "captured_field": step,
+        "onboarding_status": "completed",
+        "completed": True,
+        "question": "Onboarding complete. Daily brief automation is now enabled.",
+        "cron": cron_info,
+    }
+
+
 def parse_explicit_command(message: str) -> tuple[str, dict[str, Any]] | None:
     patterns = [
         ("onboard", re.compile(r"^\s*qubit\s+(.+?)\s+onboard\s*$", re.IGNORECASE)),
@@ -906,30 +1324,37 @@ def in_quiet_hours(now_dt: datetime, quiet_start: str, quiet_end: str) -> bool:
 
 
 def pick_due_loop(meta: dict[str, Any], now_dt: datetime) -> tuple[str, int] | None:
+    review_tracking_started_at = meta.get("review_tracking_started_at")
+    if not review_tracking_started_at:
+        return None
+
+    try:
+        tracking_start_dt = parse_iso(str(review_tracking_started_at))
+    except Exception:
+        return None
+
     due_items = []
     for loop_name in LOOP_PRIORITY:
         last_key = f"last_{loop_name}_review_at"
         last_value = meta.get(last_key)
         interval_days = LOOP_DAYS[loop_name]
 
-        if not last_value:
-            due_items.append((loop_name, interval_days + 1))
-            continue
+        if last_value:
+            try:
+                baseline_dt = parse_iso(str(last_value))
+            except Exception:
+                baseline_dt = tracking_start_dt
+        else:
+            baseline_dt = tracking_start_dt
 
-        try:
-            last_dt = parse_iso(str(last_value))
-        except Exception:
-            due_items.append((loop_name, interval_days + 1))
-            continue
-
-        elapsed = now_dt - last_dt
+        elapsed = now_dt - baseline_dt
         if elapsed >= timedelta(days=interval_days):
             due_items.append((loop_name, int(elapsed.total_seconds() // 86400)))
 
     if not due_items:
         return None
 
-    # LOOP_PRIORITY is already sorted highest cadence first.
+    # LOOP_PRIORITY is sorted from nearest cadence to broadest cadence.
     rank = {name: index for index, name in enumerate(LOOP_PRIORITY)}
     due_items.sort(key=lambda item: rank[item[0]])
     return due_items[0]
@@ -959,8 +1384,11 @@ def build_loop_prompt(loop_name: str, display_name: str) -> str:
 
 def set_loop_timestamp(pillar_dir: Path, loop_name: str, tz_name: str) -> None:
     meta, body = load_pillar_meta(pillar_dir)
-    meta[f"last_{loop_name}_review_at"] = now_iso(tz_name)
-    meta["updated_at"] = now_iso(tz_name)
+    timestamp = now_iso(tz_name)
+    if not meta.get("review_tracking_started_at"):
+        meta["review_tracking_started_at"] = timestamp
+    meta[f"last_{loop_name}_review_at"] = timestamp
+    meta["updated_at"] = timestamp
     write_pillar_meta(pillar_dir, meta, body)
 
 
@@ -1031,11 +1459,45 @@ def cmd_onboard(args: argparse.Namespace) -> dict[str, Any]:
 
     write_pillar_meta(pillar_dir, meta, body)
     manifesto_changed = ensure_manifesto(pillar_dir, pillar_slug, tz_name)
+
+    meta, body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=body,
+        tz_name=tz_name,
+        persist=False,
+    )
+    if created:
+        meta["onboarding_status"] = "in_progress"
+        meta["onboarding_step"] = "mission"
+        meta["onboarding_started_at"] = timestamp
+        meta["onboarding_completed_at"] = None
+        meta["daily_brief_enabled"] = False
+        meta["updated_at"] = timestamp
+    write_pillar_meta(pillar_dir, meta, body)
+
     journal_file = ensure_monthly_journal(pillar_dir, pillar_slug, tz_name)
 
     cron_path = cron_store_path(workspace)
-    ensure_dir(cron_path.parent)
-    cron_action, cron_job_id = upsert_daily_brief_job(cron_path, meta)
+    cron: dict[str, Any] = {
+        "action": "skipped",
+        "reason": "onboarding_in_progress",
+        "store": str(cron_path),
+    }
+    if meta.get("onboarding_status") == "completed" and bool(meta.get("daily_brief_enabled")):
+        ensure_dir(cron_path.parent)
+        cron_action, cron_job_id = upsert_daily_brief_job(cron_path, meta)
+        cron = {
+            "action": cron_action,
+            "jobId": cron_job_id,
+            "store": str(cron_path),
+        }
+
+    onboarding_status = str(meta.get("onboarding_status") or "in_progress")
+    onboarding_step = str(meta.get("onboarding_step") or "mission")
+    question = None
+    if onboarding_status != "completed":
+        question = onboarding_question_for_step(onboarding_step)
 
     return {
         "status": "ok",
@@ -1046,14 +1508,13 @@ def cmd_onboard(args: argparse.Namespace) -> dict[str, Any]:
         "layout": layout,
         "manifesto_updated": manifesto_changed,
         "journal_seeded": str(journal_file),
-        "cron": {
-            "action": cron_action,
-            "jobId": cron_job_id,
-            "store": str(cron_path),
-        },
+        "onboarding_status": onboarding_status,
+        "onboarding_step": onboarding_step,
+        "question": question,
+        "cron": cron,
         "next_steps": [
-            "If Discord channel provisioning is still pending, create the channel and rerun onboarding from that channel.",
-            "Run `qubit <pillar> daily brief` in chat for an immediate kickoff.",
+            "Answer the onboarding question in this channel to continue the real-time setup.",
+            "Daily brief automation starts automatically after onboarding is completed.",
         ],
     }
 
@@ -1129,7 +1590,26 @@ def cmd_review_weekly(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_sync_cron(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     pillar_slug = slugify(args.pillar)
-    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    pillar_dir, meta, body = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, body, lifecycle_changed = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=body,
+        tz_name=tz_name,
+        persist=True,
+    )
+
+    if meta.get("onboarding_status") != "completed" or not bool(meta.get("daily_brief_enabled")):
+        return {
+            "status": "ok",
+            "workflow": "sync-cron",
+            "pillar_dir": str(pillar_dir),
+            "cron_store": str(cron_store_path(workspace)),
+            "action": "skipped",
+            "reason": "onboarding_incomplete",
+            "lifecycle_updated": lifecycle_changed,
+        }
 
     if not str(meta.get("discord_channel_id") or "").strip():
         raise QubitError(f"Pillar '{pillar_slug}' has no discord_channel_id; cannot create cron job yet.")
@@ -1163,8 +1643,9 @@ def cmd_sync_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
         + str(workspace)
         + " --json due-scan`\n"
         "2. If no due actions, reply exactly: HEARTBEAT_OK\n"
-        "3. If due actions exist, execute the highest-priority item(s) and post concise updates in the mapped Discord channels.\n"
-        "4. For loop prompts, ask focused questions; for reminders, issue direct alerts.\n"
+        "3. If due actions exist, execute due item(s) and post concise updates in the mapped Discord channels.\n"
+        "4. Loop prompts are only for pillars with completed onboarding and review tracking history.\n"
+        "5. For loop prompts, ask focused questions; for reminders, issue direct alerts.\n"
     )
 
     heartbeat_path.write_text(content, encoding="utf-8")
@@ -1183,10 +1664,17 @@ def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
     due_actions: list[dict[str, Any]] = []
 
     for pillar_dir in list_active_pillars(workspace):
-        meta, _ = load_pillar_meta(pillar_dir)
+        meta, body = load_pillar_meta(pillar_dir)
         pillar_slug = str(meta.get("pillar_slug") or pillar_dir.name)
         display_name = str(meta.get("display_name") or pillar_slug)
         tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+        meta, _body, _ = ensure_lifecycle_meta(
+            pillar_dir=pillar_dir,
+            meta=meta,
+            body=body,
+            tz_name=tz_name,
+            persist=False,
+        )
 
         local_now = scan_now.astimezone(ZoneInfo(tz_name))
         quiet_start = str(meta.get("quiet_hours_start") or DEFAULT_QUIET_HOURS_START)
@@ -1220,6 +1708,9 @@ def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
                     "due_at": reminder.get("due_at"),
                 }
             )
+
+        if meta.get("onboarding_status") != "completed":
+            continue
 
         due_loop = pick_due_loop(meta, local_now)
         if due_loop:
@@ -1334,17 +1825,42 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.pillar:
         pillar_slug = slugify(args.pillar)
-        pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+        pillar_dir, meta, pillar_body = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
     else:
         if not args.channel_id:
             raise QubitError("ingest-message requires --pillar or --channel-id")
-        pillar_slug, pillar_dir, meta = parse_pillar_from_channel(workspace, args.channel_id)
+        pillar_slug, pillar_dir, meta, pillar_body = parse_pillar_from_channel(workspace, args.channel_id)
         if not pillar_slug:
             raise QubitError(f"No pillar mapping found for channel ID {args.channel_id}")
 
-    del pillar_dir  # resolved in apply_action via slug
-
     tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+
+    if meta.get("onboarding_status") != "completed":
+        if args.autonomous:
+            return {
+                "status": "ok",
+                "workflow": "onboarding-pending",
+                "pillar_slug": pillar_slug,
+                "onboarding_status": "in_progress",
+                "completed": False,
+                "question": None,
+            }
+        return run_onboarding_turn(
+            workspace=workspace,
+            pillar_dir=pillar_dir,
+            pillar_slug=pillar_slug,
+            meta=meta,
+            pillar_body=pillar_body,
+            message=message,
+        )
+
     inferred_actions, uncertainties = infer_actions(message, pillar_slug, tz_name)
 
     applied: list[str] = []
@@ -1489,9 +2005,20 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         "cron_store",
         "action",
         "jobId",
+        "onboarding_status",
+        "onboarding_step",
+        "captured_field",
+        "completed",
+        "reason",
     ):
         if key in result and result[key] is not None:
             lines.append(f"{key}: {result[key]}")
+
+    if "question" in result and result["question"] is not None:
+        lines.append(f"question: {result['question']}")
+
+    if "cron" in result and isinstance(result["cron"], dict):
+        lines.append(f"cron: {result['cron']}")
 
     if result.get("applied_actions"):
         lines.append("applied_actions:")

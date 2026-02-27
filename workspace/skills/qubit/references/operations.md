@@ -25,7 +25,8 @@ Autonomous mode (cron/heartbeat):
 
 1. Trigger via command or cron.
 2. Command behavior: run now only.
-3. Content seed:
+3. Cron behavior: enable only after onboarding is completed.
+4. Content seed:
    - Decisions Needed
    - Due Soon
    - Blocked Projects
@@ -48,9 +49,11 @@ Intervals from last completed run:
 
 Rules:
 
-1. If multiple cadences are due on the same day, execute only the highest cadence.
-2. If a cadence run was missed, execute once at next opportunity.
-3. After execution, set next due relative to actual run time.
+1. Start cadence prompts only after `review_tracking_started_at` exists (first real review completion).
+2. If a specific cadence has no `last_<cadence>_review_at`, use `review_tracking_started_at` as baseline.
+3. If multiple cadences are due on the same day, execute the nearest cadence first: `weekly -> monthly -> quarterly -> yearly`.
+4. If a cadence run was missed, execute once at next opportunity.
+5. After execution, set next due relative to actual run time.
 
 ## Heartbeat Model
 
@@ -59,7 +62,17 @@ Rules:
    - overdue reminders
    - due loop prompts
 3. Skip paused and retired pillars.
-4. Respect pillar-specific quiet hours for non-urgent items.
+4. Skip loop prompts when onboarding is not completed.
+5. Respect pillar-specific quiet hours for non-urgent items.
+
+## Onboarding Conversation Model
+
+1. `onboard` scaffolds structure and starts onboarding state (`in_progress`).
+2. While onboarding is `in_progress`, `ingest-message` treats user replies as onboarding answers.
+3. Ask one strategic question at a time in deterministic order: `mission -> scope -> success_signals`.
+4. Save draft manifesto updates incrementally on each accepted answer.
+5. Weak/placeholder answers must trigger a follow-up question for the same step.
+6. Mark onboarding `completed` only after mission, scope, and success signals are captured.
 
 ## Cron Model
 
