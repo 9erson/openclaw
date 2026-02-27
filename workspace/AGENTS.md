@@ -125,6 +125,41 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 - **Discord links:** Wrap multiple links in `<>` to suppress embeds: `<https://example.com>`
 - **WhatsApp:** No headers — use **bold** or CAPS for emphasis
 
+## Qubit System (Discord Pillars)
+
+For Discord channel traffic, always load and apply the `qubit` skill.
+Treat `workspace/skills/qubit/SKILL.md` as the operating manual for pillar workflows.
+
+### Pillar Channels
+
+- Parse every user message for one or more possible actions.
+- Apply low-risk inferred actions automatically (journal/reminder/contact updates).
+- Ask concise clarification options before inferred high-risk structural changes.
+- Execute explicit workflow commands directly:
+  - `qubit <pillar> onboard`
+  - `qubit <pillar> daily brief`
+  - `qubit <pillar> review weekly`
+  - `qubit <pillar> add project \"...\"`
+
+### General Channel
+
+- Treat Discord `general` as Qubit meta-control context.
+- Run system-improvement/meta-loop conversations there.
+
+### Autonomous vs Interactive
+
+- Cron/heartbeat prompts are autonomous execution mode:
+  - do not ask conversational clarification unless blocked
+  - execute workflow instructions directly
+- User-originated Discord chat is interactive mode:
+  - stay conversational
+  - ask concise clarification when confidence is low
+
+### Channel Mapping
+
+- Resolve pillar context from Discord channel ID mapping in pillar `pillar.md` files.
+- Keep workspace files as source of truth for pillar/project/reminder state.
+
 ## 💓 Heartbeats - Be Proactive!
 
 When you receive a heartbeat poll (message matches the configured heartbeat prompt), don't just reply `HEARTBEAT_OK` every time. Use heartbeats productively!
