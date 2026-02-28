@@ -12,6 +12,17 @@ Treat workspace files as the source of truth and keep Discord actions synchroniz
 
 ## Core Rules
 
+**CRITICAL: Onboarding Question Presentation**
+When presenting onboarding questions, you MUST:
+- Output ONLY the `question` text from the script JSON response
+- NO framing text whatsoever (no "Let's define...", no "Current status", no headers)
+- NO examples unless user explicitly asks
+- NO repeating or rephrasing the question
+- ONE casual emoji maximum (optional)
+- **WRONG**: "🎯 **Let's define your mission!**\n\nCan you be more specific?..."
+- **RIGHT**: "What's this pillar about? What are you trying to accomplish? 🌀"
+- If you add ANY text before/after the question, you are violating this rule
+
 1. Resolve pillar context first.
 Use explicit pillar input when present. Otherwise resolve by Discord channel ID mapping from `pillar.md`.
 2. Parse every pillar-channel message for multiple possible actions.

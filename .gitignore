@@ -1,0 +1,4 @@
+agents/main/sessions/*.jsonl
+openclaw.json
+openclaw.json.bak
+openclaw.json.bak.*

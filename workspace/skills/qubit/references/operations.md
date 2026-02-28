@@ -67,6 +67,17 @@ Rules:
 
 ## Onboarding Conversation Model
 
+**CRITICAL RULE: Question Presentation**
+When presenting ANY onboarding question to the user:
+- Output ONLY the `question` text from the script's JSON response
+- ZERO framing text - no "Let's define...", no "Current status", no headers, no emojis at the start
+- NO examples unless user explicitly asks for them
+- NO repeating or rephrasing the question
+- ONE casual emoji at the END is optional (🌀, 🤔, etc.)
+- **WRONG**: "🎯 **Let's define your mission!**\n\nCan you be more specific? What's the **main thing you want to achieve** with santa-casa?\n\nJust describe in 1-2 sentences... For example:\n- \"Build a profitable...\"\n\nWhat's your goal? 🚀"
+- **RIGHT**: "What's this pillar about? What are you trying to accomplish? 🌀"
+- The question from the script IS the complete message - adding ANY text before/after violates this rule
+
 1. `onboard` scaffolds structure and starts onboarding state (`in_progress`).
 2. While onboarding is `in_progress`, `ingest-message` treats user replies as onboarding answers.
 3. Ask one strategic question at a time in deterministic order: `mission -> scope -> success_signals`.

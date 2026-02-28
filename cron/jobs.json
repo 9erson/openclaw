@@ -1,4 +1,59 @@
 {
   "version": 1,
-  "jobs": []
+  "jobs": [
+    {
+      "jobId": "qubit-daily-brief-santa-casa",
+      "name": "Qubit Daily Brief: santa-casa",
+      "description": "managed-by=qubit;kind=daily-brief;pillar=santa-casa",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 8 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'santa-casa' (slug: santa-casa). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1476842188699865250",
+        "bestEffort": true
+      },
+      "state": {
+        "nextRunAtMs": 1772247600000
+      }
+    },
+    {
+      "jobId": "qubit-daily-brief-knights-of-st-joseph",
+      "name": "Qubit Daily Brief: knights-of-st-joseph",
+      "description": "managed-by=qubit;kind=daily-brief;pillar=knights-of-st-joseph",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 8 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'knights-of-st-joseph' (slug: knights-of-st-joseph). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1476981651098570793",
+        "bestEffort": true
+      },
+      "state": {
+        "nextRunAtMs": 1772247600000
+      }
+    }
+  ]
 }

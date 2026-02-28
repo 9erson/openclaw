@@ -46,30 +46,24 @@ ONBOARDING_DRAFT_START = "<!-- qubit:onboarding-draft:start -->"
 ONBOARDING_DRAFT_END = "<!-- qubit:onboarding-draft:end -->"
 ONBOARDING_QUESTIONS = {
     "mission": (
-        "What is the core mission of this pillar for the next 12 months? "
-        "Answer in 1-2 concrete sentences."
+        "What's this pillar about? What are you trying to accomplish?"
     ),
     "scope": (
-        "What belongs in this pillar, and what is explicitly out of scope? "
-        "Be concrete so decisions are easier later."
+        "What kind of work goes here? Anything you want to keep out?"
     ),
     "success_signals": (
-        "List 2-4 concrete success signals for this pillar. "
-        "Use measurable or clearly observable outcomes."
+        "How will you know it's working? Give me 2-3 signs of progress."
     ),
 }
 ONBOARDING_FOLLOWUPS = {
     "mission": (
-        "I need this to be more specific. What durable outcome should this pillar create "
-        "by the end of the year?"
+        "Can you be more specific? What's the main thing you want to achieve?"
     ),
     "scope": (
-        "This is still too vague. Name the key responsibilities this pillar owns and one thing "
-        "it must not absorb."
+        "Still a bit unclear. What's the main focus here, and what definitely doesn't belong?"
     ),
     "success_signals": (
-        "Please give at least two concrete success signals (for example metrics, milestones, or "
-        "observable behaviors)."
+        "Need at least 2 concrete signs. How will you measure progress?"
     ),
 }
 
