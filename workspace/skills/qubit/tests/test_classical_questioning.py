@@ -111,6 +111,27 @@ def create_completed_pillar(workspace: Path, display_name: str = "Project Pillar
     return pillar_slug
 
 
+def seed_project(workspace: Path, pillar_slug: str, title: str) -> Path:
+    return qubit.create_project(
+        workspace=workspace,
+        pillar_slug=pillar_slug,
+        title=title,
+        outcome="Define desired outcome.",
+        next_decision="Clarify immediate decision.",
+        next_action="Define next action.",
+        due_at=None,
+        status="active",
+        tags=[],
+        definitions=[],
+        dependencies=[],
+        constraints=[],
+        success_metrics=[],
+        scope_boundaries="",
+        classical_questioning_status=None,
+        classical_questioning_completed_at=None,
+    )
+
+
 def test_onboarding_starts_classical_session_and_hard_gate(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -287,6 +308,184 @@ def test_nl_trigger_defaults_to_topic_session(tmp_path: Path) -> None:
     assert result["workflow"] == qubit.CLASSICAL_QUESTIONING_NAME
     assert result["source"] == "nl-trigger"
     assert result["classical_questioning"]["context_type"] == "topic"
+    assert result["classical_questioning"]["response_mode"] == "question_only"
+
+
+def test_nl_trigger_accepts_classic_alias(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    pillar_slug = create_completed_pillar(workspace, "Classic Alias Pillar")
+
+    result = qubit.cmd_ingest_message(
+        argparse.Namespace(
+            workspace=str(workspace),
+            message="please apply classic questioning to this",
+            pillar=pillar_slug,
+            channel_id=None,
+            channel_name=None,
+            autonomous=False,
+            timezone=qubit.DEFAULT_TIMEZONE,
+            daily_brief_time=qubit.DEFAULT_DAILY_BRIEF_TIME,
+            quiet_hours_start=qubit.DEFAULT_QUIET_HOURS_START,
+            quiet_hours_end=qubit.DEFAULT_QUIET_HOURS_END,
+            review_summary=None,
+        )
+    )
+    assert result["workflow"] == qubit.CLASSICAL_QUESTIONING_NAME
+    assert result["source"] == "nl-trigger"
+    assert result["classical_questioning"]["context_type"] == "topic"
+
+
+def test_nl_project_trigger_resolves_existing_project_without_synthetic_project(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    pillar_slug = create_completed_pillar(workspace, "Mass Project Pillar")
+    _mass_project = seed_project(workspace, pillar_slug, "Prepare for Mass")
+    _other_project = seed_project(workspace, pillar_slug, "Poetry and Tea")
+
+    result = qubit.cmd_ingest_message(
+        argparse.Namespace(
+            workspace=str(workspace),
+            message="apply classical questioning to the mass project to add more context to the project artifacts",
+            pillar=pillar_slug,
+            channel_id=None,
+            channel_name=None,
+            autonomous=False,
+            timezone=qubit.DEFAULT_TIMEZONE,
+            daily_brief_time=qubit.DEFAULT_DAILY_BRIEF_TIME,
+            quiet_hours_start=qubit.DEFAULT_QUIET_HOURS_START,
+            quiet_hours_end=qubit.DEFAULT_QUIET_HOURS_END,
+            review_summary=None,
+        )
+    )
+
+    assert result["workflow"] == qubit.CLASSICAL_QUESTIONING_NAME
+    assert result["source"] == "nl-trigger"
+    assert result["classical_questioning"]["context_type"] == "project"
+    assert result["classical_questioning"]["response_mode"] == "question_only"
+    assert result["response_mode"] == "question_only"
+    assert (
+        workspace
+        / "pillars"
+        / "active"
+        / pillar_slug
+        / "projects"
+        / "prepare-for-mass"
+        / ".classical-questioning.json"
+    ).exists()
+    assert not (
+        workspace
+        / "pillars"
+        / "active"
+        / pillar_slug
+        / "projects"
+        / "to-add-more-context-to-the-project-artifacts"
+    ).exists()
+
+
+def test_nl_project_trigger_asks_one_question_when_ambiguous(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    pillar_slug = create_completed_pillar(workspace, "Ambiguous Mass Pillar")
+    _mass_one = seed_project(workspace, pillar_slug, "Prepare for Mass")
+    _mass_two = seed_project(workspace, pillar_slug, "Mass Family Dinner")
+
+    result = qubit.cmd_ingest_message(
+        argparse.Namespace(
+            workspace=str(workspace),
+            message="apply classical questioning to the mass project",
+            pillar=pillar_slug,
+            channel_id=None,
+            channel_name=None,
+            autonomous=False,
+            timezone=qubit.DEFAULT_TIMEZONE,
+            daily_brief_time=qubit.DEFAULT_DAILY_BRIEF_TIME,
+            quiet_hours_start=qubit.DEFAULT_QUIET_HOURS_START,
+            quiet_hours_end=qubit.DEFAULT_QUIET_HOURS_END,
+            review_summary=None,
+        )
+    )
+
+    assert result["reason"] == "project_resolution_ambiguous"
+    assert result["response_mode"] == "question_only"
+    assert "?" in (result.get("question") or "")
+    assert isinstance(result.get("options"), list) and len(result["options"]) == 2
+    assert not (
+        workspace
+        / "pillars"
+        / "active"
+        / pillar_slug
+        / "projects"
+        / "prepare-for-mass"
+        / ".classical-questioning.json"
+    ).exists()
+    assert not (
+        workspace
+        / "pillars"
+        / "active"
+        / pillar_slug
+        / "projects"
+        / "mass-family-dinner"
+        / ".classical-questioning.json"
+    ).exists()
+
+
+def test_nl_project_trigger_asks_one_question_when_not_found(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    pillar_slug = create_completed_pillar(workspace, "Missing Match Pillar")
+    _other = seed_project(workspace, pillar_slug, "Poetry and Tea")
+
+    result = qubit.cmd_ingest_message(
+        argparse.Namespace(
+            workspace=str(workspace),
+            message="apply classical questioning to the mass project",
+            pillar=pillar_slug,
+            channel_id=None,
+            channel_name=None,
+            autonomous=False,
+            timezone=qubit.DEFAULT_TIMEZONE,
+            daily_brief_time=qubit.DEFAULT_DAILY_BRIEF_TIME,
+            quiet_hours_start=qubit.DEFAULT_QUIET_HOURS_START,
+            quiet_hours_end=qubit.DEFAULT_QUIET_HOURS_END,
+            review_summary=None,
+        )
+    )
+
+    assert result["reason"] == "project_resolution_not_found"
+    assert result["response_mode"] == "question_only"
+    assert "?" in (result.get("question") or "")
+    assert isinstance(result.get("options"), list)
+
+
+def test_question_text_is_question_only_for_project_and_topic(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    pillar_slug = create_completed_pillar(workspace, "Question Shape Pillar")
+
+    topic_turn = qubit.cmd_classical_questioning(
+        cq_args(workspace, pillar_slug, "start", target="topic", topic="Clarify this topic")
+    )
+    topic_question = topic_turn.get("question") or ""
+    assert topic_turn["classical_questioning"]["response_mode"] == "question_only"
+    assert not topic_question.startswith("Classical questioning in progress.")
+
+    project_turn = qubit.cmd_add_project(
+        argparse.Namespace(
+            workspace=str(workspace),
+            pillar=pillar_slug,
+            title="Shape Check Project",
+            outcome="Define desired outcome.",
+            next_decision="Clarify immediate decision.",
+            next_action="Define next action.",
+            due_at=None,
+            status="active",
+            tags=[],
+        )
+    )
+    project_question = project_turn.get("question") or ""
+    assert project_turn["classical_questioning"]["response_mode"] == "question_only"
+    assert not project_question.startswith("Project setup in progress.")
 
 
 def test_general_context_without_pillar_prompts_for_pillar_choice(tmp_path: Path) -> None:

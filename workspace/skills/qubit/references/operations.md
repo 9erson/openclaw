@@ -124,8 +124,10 @@ Rules:
 7. Onboarding locks the pillar: no project/topic session can start while onboarding is active.
 8. Project setup is hard-gated: `add-project` scaffolds first, then blocks completion until session requirements are met.
 9. Standalone topic mode is allowed and writes completion summary to the monthly journal.
-10. Natural-language trigger support: detect “apply/run/use/start classical questioning ...”; default target is contextual topic.
-11. Explicit controls: status/resume/cancel/answer.
+10. Natural-language trigger support: detect “apply/run/use/start classic(al) questioning ...”; default target is contextual topic.
+11. For project-targeted natural-language triggers, resolve to an existing project slug first; if ambiguous or not found, ask exactly one clarification question and stop.
+12. Classical-questioning payloads expose `response_mode=question_only`; render only one question text per turn in interactive replies.
+13. Explicit controls: status/resume/cancel/answer.
 
 ## Cron Model
 

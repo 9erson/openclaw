@@ -83,6 +83,8 @@ CQ_RETRY_ESCALATION_ATTEMPT = 2
 CQ_SIDECAR_FILENAME = ".classical-questioning.json"
 CQ_INDEX_FILENAME = "classical-questioning-index.json"
 CQ_TOPIC_DEFAULT_PROMPT = "Clarify this topic and turn it into an actionable direction."
+CQ_RESPONSE_MODE_QUESTION_ONLY = "question_only"
+CQ_TRIGGER_PATTERN = re.compile(r"\bclassic(?:al)?\s+questioning\b", re.IGNORECASE)
 CQ_RHETORIC_CUE_PATTERN = re.compile(
     r"\b(influence|persuade|convince|pitch|narrative|story|message|creative|expression|frame)\b",
     re.IGNORECASE,
@@ -116,6 +118,35 @@ CQ_STOPWORDS = {
     "success",
     "system",
     "workflow",
+}
+CQ_PROJECT_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "apply",
+    "classical",
+    "classic",
+    "project",
+    "questioning",
+    "run",
+    "start",
+    "the",
+    "this",
+    "use",
+}
+CQ_PROJECT_QUERY_CONNECTORS = {
+    "about",
+    "and",
+    "at",
+    "because",
+    "by",
+    "for",
+    "from",
+    "in",
+    "on",
+    "or",
+    "that",
+    "to",
+    "with",
 }
 
 CQ_SLOT_ORDER = {
@@ -1271,13 +1302,7 @@ def cq_render_question_text(
         choices = cq_constrained_choices(slot)
         question = question.rstrip("?") + "? " + "Options: " + " | ".join(choices)
 
-    if context_type == "onboarding":
-        return question
-
-    if context_type == "project":
-        return f"Project setup in progress. {question}"
-
-    return f"Classical questioning in progress. {question}"
+    return question
 
 
 def cq_set_next_question(
@@ -1313,6 +1338,7 @@ def cq_build_response_payload(session: dict[str, Any]) -> dict[str, Any]:
         "session_id": session.get("session_id"),
         "context_type": session.get("context_type"),
         "status": session.get("status"),
+        "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
         "coverage": coverage,
         "question_count": int(session.get("question_count") or 0),
         "question_cap": int(session.get("question_cap") or CQ_QUESTION_CAP_DEFAULT),
@@ -3460,13 +3486,163 @@ def set_loop_timestamp(pillar_dir: Path, loop_name: str, tz_name: str) -> None:
     write_pillar_meta(pillar_dir, meta, body)
 
 
+def cq_tokenize_project_query(value: str) -> list[str]:
+    text = normalize_text(value).lower()
+    if not text:
+        return []
+    tokens = [token for token in re.findall(r"[a-z0-9]+", text) if token]
+    return [
+        token
+        for token in tokens
+        if token not in CQ_PROJECT_QUERY_STOPWORDS and token not in CQ_PROJECT_QUERY_CONNECTORS
+    ]
+
+
+def cq_extract_project_query(message: str) -> str:
+    text = normalize_text(message)
+    if not text:
+        return ""
+
+    quoted_after_match = re.search(r"\bproject\b\s+(?:[\"'](.+?)[\"'])", text, re.IGNORECASE)
+    if quoted_after_match:
+        return normalize_text(quoted_after_match.group(1))
+
+    plain_after_match = re.search(
+        r"\bproject\b\s+([A-Za-z0-9][A-Za-z0-9\s\-_]{1,80})",
+        text,
+        re.IGNORECASE,
+    )
+    if plain_after_match:
+        candidate = normalize_text(plain_after_match.group(1))
+        words = candidate.split()
+        if words and words[0].lower() not in CQ_PROJECT_QUERY_CONNECTORS:
+            trimmed = re.split(
+                r"\b(?:about|and|because|for|in|on|or|that|to|with)\b",
+                candidate,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            query_tokens = cq_tokenize_project_query(trimmed)
+            if query_tokens:
+                return " ".join(query_tokens)
+
+    before_matches = re.findall(
+        r"\b(?:the\s+)?([A-Za-z0-9][A-Za-z0-9\-_]{1,30}(?:\s+[A-Za-z0-9][A-Za-z0-9\-_]{1,30}){0,2})\s+project\b",
+        text,
+        re.IGNORECASE,
+    )
+    for raw_match in reversed(before_matches):
+        raw_words = [word for word in re.findall(r"[a-z0-9]+", raw_match.lower()) if word]
+        while raw_words and (raw_words[0] in CQ_PROJECT_QUERY_STOPWORDS or raw_words[0] in CQ_PROJECT_QUERY_CONNECTORS):
+            raw_words.pop(0)
+        if not raw_words:
+            continue
+        if any(word in CQ_PROJECT_QUERY_CONNECTORS for word in raw_words):
+            continue
+        candidate_tokens = cq_tokenize_project_query(" ".join(raw_words))
+        if candidate_tokens:
+            return " ".join(candidate_tokens)
+    return ""
+
+
+def resolve_trigger_project(
+    *,
+    trigger: dict[str, Any],
+    projects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    options: list[str] = []
+    for project in projects:
+        title = normalize_text(project.get("title"))
+        project_slug = normalize_text(project.get("project_slug"))
+        options.append(title or project_slug)
+
+    query = normalize_text(trigger.get("project_query"))
+    query_tokens = cq_tokenize_project_query(query)
+    query_slug = slugify(query) if query else ""
+
+    if not projects:
+        return {
+            "project_slug": None,
+            "project_title": None,
+            "resolution_status": "not_found",
+            "options": options,
+        }
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for project in projects:
+        project_slug = normalize_text(project.get("project_slug"))
+        project_title = normalize_text(project.get("title"))
+        token_set = set(cq_tokenize_project_query(project_slug) + cq_tokenize_project_query(project_title))
+
+        score = 0
+        if query_slug and query_slug == project_slug:
+            score += 20
+
+        if query:
+            query_lower = query.lower()
+            title_lower = project_title.lower()
+            slug_phrase = project_slug.replace("-", " ")
+            if query_lower and query_lower == title_lower:
+                score += 20
+            elif query_lower and (query_lower in title_lower or query_lower in slug_phrase):
+                score += 10
+
+        if query_tokens:
+            overlap = [token for token in query_tokens if token in token_set]
+            if overlap:
+                score += len(overlap) * 4
+            if set(query_tokens).issubset(token_set):
+                score += 4
+
+        if score > 0:
+            scored.append((score, project))
+
+    if not scored:
+        if len(projects) == 1 and not query_tokens:
+            only = projects[0]
+            return {
+                "project_slug": normalize_text(only.get("project_slug")) or None,
+                "project_title": normalize_text(only.get("title")) or None,
+                "resolution_status": "resolved",
+                "options": options,
+            }
+        return {
+            "project_slug": None,
+            "project_title": None,
+            "resolution_status": "not_found",
+            "options": options,
+        }
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score = scored[0][0]
+    top_matches = [project for score, project in scored if score == top_score]
+    if len(top_matches) > 1:
+        return {
+            "project_slug": None,
+            "project_title": None,
+            "resolution_status": "ambiguous",
+            "options": [
+                normalize_text(project.get("title")) or normalize_text(project.get("project_slug"))
+                for project in top_matches
+            ],
+        }
+
+    winner = top_matches[0]
+    return {
+        "project_slug": normalize_text(winner.get("project_slug")) or None,
+        "project_title": normalize_text(winner.get("title")) or None,
+        "resolution_status": "resolved",
+        "options": options,
+    }
+
+
 def parse_classical_questioning_trigger(message: str) -> dict[str, Any] | None:
     text = normalize_text(message)
     if not text:
         return None
     if not re.search(r"\b(apply|run|use|start)\b", text, re.IGNORECASE):
         return None
-    if not re.search(r"\bclassical\s+questioning\b", text, re.IGNORECASE):
+    if not CQ_TRIGGER_PATTERN.search(text):
         return None
 
     target = "topic"
@@ -3476,9 +3652,14 @@ def parse_classical_questioning_trigger(message: str) -> dict[str, Any] | None:
         payload = {"target": target}
     elif re.search(r"\bproject\b", text, re.IGNORECASE):
         target = "project"
-        project_title_match = re.search(r"\bproject\b\s+(?:[\"'](.+?)[\"']|([A-Za-z0-9][A-Za-z0-9\s\-_:]{2,}))", text, re.IGNORECASE)
-        project_title = normalize_text(project_title_match.group(1) or project_title_match.group(2)) if project_title_match else ""
-        payload = {"target": target, "project_title": project_title or "Untitled Project"}
+        project_query = cq_extract_project_query(text)
+        payload = {
+            "target": target,
+            "project_query": project_query,
+            "project_slug": None,
+            "project_title": project_query or None,
+            "resolution_status": "not_found",
+        }
     elif re.search(r"\btopic\b", text, re.IGNORECASE):
         topic_match = re.search(r"\btopic\b\s+(?:[\"'](.+?)[\"']|(.*))$", text, re.IGNORECASE)
         topic = normalize_text(topic_match.group(1) or topic_match.group(2)) if topic_match else text
@@ -3534,6 +3715,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                 "reason": "onboarding_lock",
                 "hard_gate_blocked": True,
                 "question": "Onboarding is still in progress for this pillar. Resume or complete onboarding before starting another classical questioning workflow.",
+                "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
             }
 
         project_slug: str | None = None
@@ -3552,10 +3734,28 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             topic_seed = "Onboarding setup for pillar mission, scope, principles, and signals."
 
         if target == "project":
+            provided_project_slug = normalize_text(getattr(args, "project_slug", ""))
             title = normalize_text(getattr(args, "project_title", ""))
-            if not title:
-                raise QubitError("Project classical-questioning start requires project_title")
-            project_slug = slugify(title)
+            if provided_project_slug:
+                project_slug = slugify(provided_project_slug)
+                project_file = pillar_dir / "projects" / project_slug / "project.md"
+                if not project_file.exists():
+                    return {
+                        "status": "ok",
+                        "workflow": CLASSICAL_QUESTIONING_NAME,
+                        "pillar_slug": pillar_slug,
+                        "action": "blocked",
+                        "reason": "project_not_found",
+                        "hard_gate_blocked": True,
+                        "question": "I couldn't find that project. Which project should I use for classical questioning?",
+                        "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
+                    }
+                project_fm, _project_body = read_markdown(project_file)
+                title = normalize_text(project_fm.get("title")) or title or project_slug.replace("-", " ").title()
+            else:
+                if not title:
+                    raise QubitError("Project classical-questioning start requires project_title")
+                project_slug = slugify(title)
             active_project_session, _active_project_path = cq_find_active_session(workspace, pillar_slug, context_type="project")
             if active_project_session and normalize_text(active_project_session.get("project_slug")) != project_slug:
                 return {
@@ -3571,25 +3771,38 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                         f"qubit {pillar_slug} classical questioning cancel project",
                     ],
                     "classical_questioning": cq_build_response_payload(active_project_session),
+                    "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
                 }
-            project_file = create_project(
-                workspace=workspace,
-                pillar_slug=pillar_slug,
-                title=title,
-                outcome=normalize_text(getattr(args, "outcome", "")) or "Define desired outcome.",
-                next_decision=normalize_text(getattr(args, "next_decision", "")) or "Clarify immediate decision.",
-                next_action=normalize_text(getattr(args, "next_action", "")) or "Define next action.",
-                due_at=getattr(args, "due_at", None),
-                status=normalize_text(getattr(args, "status", "")) or "active",
-                tags=[tag.strip() for tag in (getattr(args, "tags", []) or []) if tag.strip()],
-                definitions=[],
-                dependencies=[],
-                constraints=[],
-                success_metrics=[],
-                scope_boundaries="",
-                classical_questioning_status="in_progress",
-                classical_questioning_completed_at=None,
-            )
+            if not project_file:
+                project_file = create_project(
+                    workspace=workspace,
+                    pillar_slug=pillar_slug,
+                    title=title,
+                    outcome=normalize_text(getattr(args, "outcome", "")) or "Define desired outcome.",
+                    next_decision=normalize_text(getattr(args, "next_decision", "")) or "Clarify immediate decision.",
+                    next_action=normalize_text(getattr(args, "next_action", "")) or "Define next action.",
+                    due_at=getattr(args, "due_at", None),
+                    status=normalize_text(getattr(args, "status", "")) or "active",
+                    tags=[tag.strip() for tag in (getattr(args, "tags", []) or []) if tag.strip()],
+                    definitions=[],
+                    dependencies=[],
+                    constraints=[],
+                    success_metrics=[],
+                    scope_boundaries="",
+                    classical_questioning_status="in_progress",
+                    classical_questioning_completed_at=None,
+                )
+            else:
+                project_fm, project_body = read_markdown(project_file)
+                project_fm["schema_version"] = 1
+                project_fm["updated_at"] = now_iso(tz_name)
+                project_fm["classical_questioning_status"] = "in_progress"
+                project_fm["classical_questioning_completed_at"] = None
+                for list_field in ("definitions", "dependencies", "constraints", "success_metrics", "tags"):
+                    if not isinstance(project_fm.get(list_field), list):
+                        project_fm[list_field] = coerce_string_list(project_fm.get(list_field))
+                project_fm["scope_boundaries"] = normalize_text(project_fm.get("scope_boundaries"))
+                write_markdown(project_file, project_fm, project_body)
             topic_seed = f"Project setup: {title}"
 
         session, state_path = cq_start_session(
@@ -3616,6 +3829,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                     f"qubit {pillar_slug} classical questioning resume",
                     f"qubit {pillar_slug} classical questioning cancel",
                 ],
+                "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
             }
 
         payload = cq_build_response_payload(session)
@@ -3629,6 +3843,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             "classical_questioning": payload,
             "hard_gate_blocked": bool(payload.get("hard_gate_blocked")),
             "resume_hint": payload.get("resume_hint"),
+            "response_mode": payload.get("response_mode"),
         }
 
     if action == "status":
@@ -3644,6 +3859,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                     "classical_questioning": payload,
                     "hard_gate_blocked": bool(payload.get("hard_gate_blocked")),
                     "question": payload.get("next_question"),
+                    "response_mode": payload.get("response_mode"),
                 }
             return {
                 "status": "ok",
@@ -3652,6 +3868,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                 "action": "status",
                 "reason": "no_active_session",
                 "classical_questioning": None,
+                "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
             }
 
         active_payloads = []
@@ -3667,6 +3884,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             "active_sessions": active_payloads,
             "classical_questioning": active_payloads[0] if len(active_payloads) == 1 else None,
             "reason": "multiple_active_sessions" if len(active_payloads) > 1 else None,
+            "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
         }
 
     session, state_path = cq_choose_active_session_for_action(
@@ -3682,6 +3900,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             "action": action,
             "reason": "active_session_not_resolved",
             "question": "I found zero or multiple active classical questioning sessions. Use 'status' with a context type first.",
+            "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
         }
 
     if action == "resume":
@@ -3702,6 +3921,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             "classical_questioning": payload,
             "hard_gate_blocked": bool(payload.get("hard_gate_blocked")),
             "resume_hint": payload.get("resume_hint"),
+            "response_mode": payload.get("response_mode"),
         }
 
     if action == "cancel":
@@ -3723,6 +3943,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "canceled",
             },
             "hard_gate_blocked": False,
+            "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
         }
 
     if action == "answer":
@@ -3742,6 +3963,7 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
             "classical_questioning": payload,
             "hard_gate_blocked": bool(payload.get("hard_gate_blocked")),
             "resume_hint": payload.get("resume_hint"),
+            "response_mode": payload.get("response_mode"),
         }
         completion_info = event.get("completion_info")
         if isinstance(completion_info, dict):
@@ -5143,6 +5365,7 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
                     "question": "I can start classical questioning, but I need a pillar first. Tell me which pillar to use.",
                     "options": active_pillars[:8],
                     "hard_gate_blocked": False,
+                    "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
                 }
             raise QubitError(f"No pillar mapping found for channel ID {args.channel_id}")
 
@@ -5215,12 +5438,51 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
         return result
 
     if classical_trigger and not args.autonomous:
+        if normalize_text(classical_trigger.get("target")) == "project":
+            project_resolution = resolve_trigger_project(
+                trigger=classical_trigger,
+                projects=read_projects(pillar_dir),
+            )
+            classical_trigger["project_slug"] = project_resolution.get("project_slug")
+            classical_trigger["project_title"] = project_resolution.get("project_title")
+            classical_trigger["resolution_status"] = project_resolution.get("resolution_status")
+
+            resolution_status = normalize_text(project_resolution.get("resolution_status"))
+            if resolution_status == "ambiguous":
+                return {
+                    "status": "ok",
+                    "workflow": CLASSICAL_QUESTIONING_NAME,
+                    "pillar_slug": pillar_slug,
+                    "action": "blocked",
+                    "reason": "project_resolution_ambiguous",
+                    "question": "I found multiple matching projects. Which one should I use for classical questioning?",
+                    "options": [option for option in (project_resolution.get("options") or []) if normalize_text(option)][:8],
+                    "hard_gate_blocked": False,
+                    "classical_trigger": classical_trigger,
+                    "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
+                }
+
+            if resolution_status == "not_found":
+                return {
+                    "status": "ok",
+                    "workflow": CLASSICAL_QUESTIONING_NAME,
+                    "pillar_slug": pillar_slug,
+                    "action": "blocked",
+                    "reason": "project_resolution_not_found",
+                    "question": "Which existing project should I use for classical questioning?",
+                    "options": [option for option in (project_resolution.get("options") or []) if normalize_text(option)][:8],
+                    "hard_gate_blocked": False,
+                    "classical_trigger": classical_trigger,
+                    "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
+                }
+
         result = cmd_classical_questioning(
             argparse.Namespace(
                 workspace=str(workspace),
                 pillar=pillar_slug,
                 action="start",
                 target=classical_trigger.get("target"),
+                project_slug=classical_trigger.get("project_slug"),
                 project_title=classical_trigger.get("project_title"),
                 topic=classical_trigger.get("topic"),
                 answer=None,
@@ -5235,6 +5497,7 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
         result["source"] = "nl-trigger"
+        result["classical_trigger"] = classical_trigger
         return result
 
     active_records = cq_active_records_for_pillar(workspace, pillar_slug)
@@ -5269,6 +5532,7 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
             "action": "blocked",
             "reason": "multiple_active_sessions",
             "question": "Multiple classical questioning sessions are active. Use status with a context type, then resume one.",
+            "response_mode": CQ_RESPONSE_MODE_QUESTION_ONLY,
         }
 
     inferred_actions, uncertainties = infer_actions(message, pillar_slug, tz_name)
@@ -5537,6 +5801,7 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         "resume_hint",
         "accepted",
         "captured_slot",
+        "response_mode",
     ):
         if key in result and result[key] is not None:
             lines.append(f"{key}: {result[key]}")

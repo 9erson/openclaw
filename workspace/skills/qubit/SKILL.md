@@ -60,8 +60,10 @@ Use this during onboarding turns.
 Use this for `classical-questioning` turns outside onboarding (`project` or `topic`).
 
 1. Ask exactly one question per turn.
-2. Use a short context lead-in plus the question (do not expose internal level labels).
-3. Keep wording concrete and brief.
+2. Output ONLY the question text from the script response (`question`/`next_question`).
+3. Use NO framing text (no headers, setup text, or prefaces).
+4. Use NO grouped prompts or multi-question lists.
+5. Keep wording concrete and brief.
 
 ### Conversational Guardrail
 
