@@ -9,7 +9,7 @@ scope: We try and have monthly events. Virtue building. Learning useful skills. 
   age group has their own tract. Twice a year camps. Also outreach programs occasionally
   to senior homes.
 non_negotiables:
-- Document non-negotiable principles.
+- Every event must be tied to faith, or virtue, or useful skills to get them to become a better version of themselves. Should not be mindless activities.
 success_signals:
 - Families showing up repeatedly. Dads of the boys helping out with organizing. Parents
   supporting

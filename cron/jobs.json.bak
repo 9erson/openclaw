@@ -2,30 +2,27 @@
   "version": 1,
   "jobs": [
     {
-      "jobId": "qubit-daily-brief-santa-casa",
-      "name": "Qubit Daily Brief: santa-casa",
-      "description": "managed-by=qubit;kind=daily-brief;pillar=santa-casa",
+      "jobId": "qubit-heal-nightly",
+      "name": "Qubit Heal Nightly",
+      "description": "managed-by=qubit;kind=heal",
       "enabled": true,
       "deleteAfterRun": false,
       "schedule": {
         "kind": "cron",
-        "expr": "30 8 * * *",
+        "expr": "0 3 * * *",
         "tz": "Asia/Kolkata"
       },
       "sessionTarget": "isolated",
       "wakeMode": "next-heartbeat",
       "payload": {
         "kind": "agentTurn",
-        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'santa-casa' (slug: santa-casa). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
-      },
-      "delivery": {
-        "mode": "announce",
-        "channel": "discord",
-        "to": "channel:1476842188699865250",
-        "bestEffort": true
+        "message": "qubit heal"
       },
       "state": {
-        "nextRunAtMs": 1772247600000
+        "nextRunAtMs": 1772314200000
+      },
+      "delivery": {
+        "mode": "announce"
       }
     },
     {
@@ -36,7 +33,7 @@
       "deleteAfterRun": false,
       "schedule": {
         "kind": "cron",
-        "expr": "30 8 * * *",
+        "expr": "0 4 * * *",
         "tz": "Asia/Kolkata"
       },
       "sessionTarget": "isolated",
@@ -52,7 +49,34 @@
         "bestEffort": true
       },
       "state": {
-        "nextRunAtMs": 1772247600000
+        "nextRunAtMs": 1772317800000
+      }
+    },
+    {
+      "jobId": "qubit-daily-brief-santa-casa",
+      "name": "Qubit Daily Brief: santa-casa",
+      "description": "managed-by=qubit;kind=daily-brief;pillar=santa-casa",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 4 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'santa-casa' (slug: santa-casa). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1476842188699865250",
+        "bestEffort": true
+      },
+      "state": {
+        "nextRunAtMs": 1772319600000
       }
     }
   ]

@@ -22,7 +22,7 @@ tags: []
 *This is also the standard venue for every Wednesday session.*
 
 **Tasks to organize:**
-- [~] Altar boys ⏳ (Travis D'Souza contacted - planning started)
+- [~] Altar boys ⏳ (Roles assigned: Nathan - Thurifer, Morgan - Bell ringer)
 - [ ] Readers
 - [ ] Readings
 - [ ] Hymns
@@ -31,7 +31,11 @@ tags: []
 
 **Key Contacts:**
 - **Priest:** Fr. Randell (celebrates all Santa Casa masses)
-- **Altar Boys:** Travis D'Souza (father of Morgan, runs altar boys program)
+- **Altar Boys Coordinator:** Travis D'Souza (father of Morgan, runs altar boys program)
+
+**Altar Serving Roles:**
+- **Thurifer:** Nathan (carries censer/incense)
+- **Bell Ringer:** Morgan D'Souza
 
 **Due:** March 11, 2026 (time TBD)
 
@@ -40,3 +44,4 @@ tags: []
 **2026-02-27:** Chapel venue confirmed - Lar de Estudantes. This is also the standard venue for all Wednesday sessions.
 **2026-02-27:** Priest confirmed - Fr. Randell (celebrates all Santa Casa masses). Contact created.
 **2026-02-27:** Travis D'Souza contacted about March 11th Mass - altar boys coordination started. Contact created.
+**2026-02-28:** Altar serving roles assigned - Nathan (Thurifer), Morgan (Bell ringer).
