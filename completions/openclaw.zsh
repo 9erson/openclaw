@@ -11,7 +11,7 @@ _openclaw_root_completion() {
     "--profile[Use a named profile (isolates OPENCLAW_STATE_DIR/OPENCLAW_CONFIG_PATH under ~/.openclaw-<name>)]" \
     "--log-level[Global log level override for file + console (silent|fatal|error|warn|info|debug|trace)]" \
     "--no-color[Disable ANSI colors]" \
-    "1: :_values 'command' 'completion[Generate shell completion script]' 'setup[Initialize ~/.openclaw/openclaw.json and the agent workspace]' 'onboard[Interactive wizard to set up the gateway, workspace, and skills]' 'configure[Interactive setup wizard for credentials, channels, gateway, and agent defaults]' 'config[Non-interactive config helpers (get/set/unset). Run without subcommand for the setup wizard.]' 'doctor[Health checks + quick fixes for the gateway and channels]' 'dashboard[Open the Control UI with your current token]' 'reset[Reset local config/state (keeps the CLI installed)]' 'uninstall[Uninstall the gateway service + local data (CLI remains)]' 'message[Send, read, and manage messages and channel actions]' 'memory[Search, inspect, and reindex memory files]' 'agent[Run an agent turn via the Gateway (use --local for embedded)]' 'agents[Manage isolated agents (workspaces + auth + routing)]' 'status[Show channel health and recent session recipients]' 'health[Fetch health from the running gateway]' 'sessions[List stored conversation sessions]' 'browser[Manage OpenClaw'\''s dedicated browser (Chrome/Chromium)]' 'acp[Run an ACP bridge backed by the Gateway]' 'gateway[Run, inspect, and query the WebSocket Gateway]' 'daemon[Manage the Gateway service (launchd/systemd/schtasks)]' 'logs[Tail gateway file logs via RPC]' 'system[System tools (events, heartbeat, presence)]' 'models[Model discovery, scanning, and configuration]' 'approvals[Manage exec approvals (gateway or node host)]' 'nodes[Manage gateway-owned nodes (pairing, status, invoke, and media)]' 'devices[Device pairing and auth tokens]' 'node[Run and manage the headless node host service]' 'sandbox[Manage sandbox containers (Docker-based agent isolation)]' 'tui[Open a terminal UI connected to the Gateway]' 'cron[Manage cron jobs (via Gateway)]' 'dns[DNS helpers for wide-area discovery (Tailscale + CoreDNS)]' 'docs[Search the live OpenClaw docs]' 'hooks[Manage internal agent hooks]' 'webhooks[Webhook helpers and integrations]' 'qr[Generate an iOS pairing QR code and setup code]' 'clawbot[Legacy clawbot command aliases]' 'pairing[Secure DM pairing (approve inbound requests)]' 'plugins[Manage OpenClaw plugins and extensions]' 'channels[Manage connected chat channels and accounts]' 'directory[Lookup contact and group IDs (self, peers, groups) for supported chat channels]' 'security[Audit local config and state for common security foot-guns]' 'skills[List and inspect available skills]' 'update[Update OpenClaw and inspect update channel status]'" \
+    "1: :_values 'command' 'completion[Generate shell completion script]' 'setup[Initialize ~/.openclaw/openclaw.json and the agent workspace]' 'onboard[Interactive wizard to set up the gateway, workspace, and skills]' 'configure[Interactive setup wizard for credentials, channels, gateway, and agent defaults]' 'config[Non-interactive config helpers (get/set/unset). Run without subcommand for the setup wizard.]' 'doctor[Health checks + quick fixes for the gateway and channels]' 'dashboard[Open the Control UI with your current token]' 'reset[Reset local config/state (keeps the CLI installed)]' 'uninstall[Uninstall the gateway service + local data (CLI remains)]' 'message[Send, read, and manage messages and channel actions]' 'memory[Search, inspect, and reindex memory files]' 'agent[Run an agent turn via the Gateway (use --local for embedded)]' 'agents[Manage isolated agents (workspaces + auth + routing)]' 'status[Show channel health and recent session recipients]' 'health[Fetch health from the running gateway]' 'sessions[List stored conversation sessions]' 'browser[Manage OpenClaw'\''s dedicated browser (Chrome/Chromium)]' 'acp[Run an ACP bridge backed by the Gateway]' 'gateway[Run, inspect, and query the WebSocket Gateway]' 'daemon[Manage the Gateway service (launchd/systemd/schtasks)]' 'logs[Tail gateway file logs via RPC]' 'system[System tools (events, heartbeat, presence)]' 'models[Model discovery, scanning, and configuration]' 'approvals[Manage exec approvals (gateway or node host)]' 'nodes[Manage gateway-owned nodes (pairing, status, invoke, and media)]' 'devices[Device pairing and auth tokens]' 'node[Run and manage the headless node host service]' 'sandbox[Manage sandbox containers (Docker-based agent isolation)]' 'tui[Open a terminal UI connected to the Gateway]' 'cron[Manage cron jobs (via Gateway)]' 'dns[DNS helpers for wide-area discovery (Tailscale + CoreDNS)]' 'docs[Search the live OpenClaw docs]' 'hooks[Manage internal agent hooks]' 'webhooks[Webhook helpers and integrations]' 'qr[Generate an iOS pairing QR code and setup code]' 'clawbot[Legacy clawbot command aliases]' 'pairing[Secure DM pairing (approve inbound requests)]' 'plugins[Manage OpenClaw plugins and extensions]' 'channels[Manage connected chat channels and accounts]' 'directory[Lookup contact and group IDs (self, peers, groups) for supported chat channels]' 'security[Audit local config and state for common security foot-guns]' 'secrets[Secrets runtime controls]' 'skills[List and inspect available skills]' 'update[Update OpenClaw and inspect update channel status]'" \
     "*::arg:->args"
 
   case $state in
@@ -58,6 +58,7 @@ _openclaw_root_completion() {
         (channels) _openclaw_channels ;;
         (directory) _openclaw_directory ;;
         (security) _openclaw_security ;;
+        (secrets) _openclaw_secrets ;;
         (skills) _openclaw_skills ;;
         (update) _openclaw_update ;;
       esac
@@ -87,7 +88,8 @@ _openclaw_setup() {
 _openclaw_onboard() {
   _arguments -C \
     "--workspace[Agent workspace directory (default: ~/.openclaw/workspace)]" \
-    "--reset[Reset config + credentials + sessions + workspace before running wizard]" \
+    "--reset[Reset config + credentials + sessions before running wizard (workspace only with --reset-scope full)]" \
+    "--reset-scope[Reset scope: config|config+creds+sessions|full]" \
     "--non-interactive[Run without prompts]" \
     "--accept-risk[Acknowledge that agents are powerful and full system access is risky (required for --non-interactive)]" \
     "--flow[Wizard flow: quickstart|advanced|manual]" \
@@ -97,6 +99,7 @@ _openclaw_onboard() {
     "--token[Token value (non-interactive; used with --auth-choice token)]" \
     "--token-profile-id[Auth profile id (non-interactive; default: <provider>:manual)]" \
     "--token-expires-in[Optional token expiry duration (e.g. 365d, 12h)]" \
+    "--secret-input-mode[API key persistence mode: plaintext|ref (default: plaintext)]" \
     "--cloudflare-ai-gateway-account-id[Cloudflare Account ID]" \
     "--cloudflare-ai-gateway-gateway-id[Cloudflare AI Gateway ID]" \
     "--anthropic-api-key[Anthropic API key]" \
@@ -898,6 +901,27 @@ _openclaw_agents_list() {
     "--bindings[Include routing bindings]"
 }
 
+_openclaw_agents_bindings() {
+  _arguments -C \
+    "--agent[Filter by agent id]" \
+    "--json[Output JSON instead of text]"
+}
+
+_openclaw_agents_bind() {
+  _arguments -C \
+    "--agent[Agent id (defaults to current default agent)]" \
+    "--bind[Binding to add (repeatable). If omitted, accountId is resolved by channel defaults/hooks.]" \
+    "--json[Output JSON summary]"
+}
+
+_openclaw_agents_unbind() {
+  _arguments -C \
+    "--agent[Agent id (defaults to current default agent)]" \
+    "--bind[Binding to remove (repeatable)]" \
+    "--all[Remove all bindings for this agent]" \
+    "--json[Output JSON summary]"
+}
+
 _openclaw_agents_add() {
   _arguments -C \
     "--workspace[Workspace directory for the new agent]" \
@@ -933,13 +957,16 @@ _openclaw_agents() {
   
   _arguments -C \
      \
-    "1: :_values 'command' 'list[List configured agents]' 'add[Add a new isolated agent]' 'set-identity[Update an agent identity (name/theme/emoji/avatar)]' 'delete[Delete an agent and prune workspace/state]'" \
+    "1: :_values 'command' 'list[List configured agents]' 'bindings[List routing bindings]' 'bind[Add routing bindings for an agent]' 'unbind[Remove routing bindings for an agent]' 'add[Add a new isolated agent]' 'set-identity[Update an agent identity (name/theme/emoji/avatar)]' 'delete[Delete an agent and prune workspace/state]'" \
     "*::arg:->args"
 
   case $state in
     (args)
       case $line[1] in
         (list) _openclaw_agents_list ;;
+        (bindings) _openclaw_agents_bindings ;;
+        (bind) _openclaw_agents_bind ;;
+        (unbind) _openclaw_agents_unbind ;;
         (add) _openclaw_agents_add ;;
         (set-identity) _openclaw_agents_set_identity ;;
         (delete) _openclaw_agents_delete ;;
@@ -974,6 +1001,7 @@ _openclaw_sessions_cleanup() {
     "--all-agents[Run maintenance across all configured agents]" \
     "--dry-run[Preview maintenance actions without writing]" \
     "--enforce[Apply maintenance even when configured mode is warn]" \
+    "--fix-missing[Remove store entries whose transcript files are missing (bypasses age/count retention)]" \
     "--active-key[Protect this session key from budget-eviction]" \
     "--json[Output JSON]"
 }
@@ -1623,7 +1651,7 @@ _openclaw_gateway_run() {
     "--port[Port for the gateway WebSocket]" \
     "--bind[Bind mode (\"loopback\"|\"lan\"|\"tailnet\"|\"auto\"|\"custom\"). Defaults to config gateway.bind (or loopback).]" \
     "--token[Shared token required in connect.params.auth.token (default: OPENCLAW_GATEWAY_TOKEN env if set)]" \
-    "--auth[Gateway auth mode (\"token\"|\"password\")]" \
+    "--auth[Gateway auth mode (\"none\"|\"token\"|\"password\"|\"trusted-proxy\")]" \
     "--password[Password for auth mode=password]" \
     "--tailscale[Tailscale exposure mode (\"off\"|\"serve\"|\"funnel\")]" \
     "--tailscale-reset-on-exit[Reset Tailscale serve/funnel configuration on shutdown]" \
@@ -1737,7 +1765,7 @@ _openclaw_gateway() {
     "--port[Port for the gateway WebSocket]" \
     "--bind[Bind mode (\"loopback\"|\"lan\"|\"tailnet\"|\"auto\"|\"custom\"). Defaults to config gateway.bind (or loopback).]" \
     "--token[Shared token required in connect.params.auth.token (default: OPENCLAW_GATEWAY_TOKEN env if set)]" \
-    "--auth[Gateway auth mode (\"token\"|\"password\")]" \
+    "--auth[Gateway auth mode (\"none\"|\"token\"|\"password\"|\"trusted-proxy\")]" \
     "--password[Password for auth mode=password]" \
     "--tailscale[Tailscale exposure mode (\"off\"|\"serve\"|\"funnel\")]" \
     "--tailscale-reset-on-exit[Reset Tailscale serve/funnel configuration on shutdown]" \
@@ -2955,6 +2983,7 @@ _openclaw_cron_add() {
     "--keep-after-run[Keep one-shot job after it succeeds]" \
     "--agent[Agent id for this job]" \
     "--session[Session target (main|isolated)]" \
+    "--session-key[Session key for job routing (e.g. agent:my-agent:my-session)]" \
     "--wake[Wake mode (now|next-heartbeat)]" \
     "--at[Run once at time (ISO) or +duration (e.g. 20m)]" \
     "--every[Run every duration (e.g. 10m, 1h)]" \
@@ -3035,6 +3064,8 @@ _openclaw_cron_edit() {
     "--session[Session target (main|isolated)]" \
     "--agent[Set agent id]" \
     "--clear-agent[Unset agent and use default]" \
+    "--session-key[Set session key for job routing]" \
+    "--clear-session-key[Unset session key]" \
     "--wake[Wake mode (now|next-heartbeat)]" \
     "--at[Set one-shot time (ISO) or duration like 20m]" \
     "--every[Set interval duration like 10m]" \
@@ -3302,14 +3333,14 @@ _openclaw_clawbot() {
 
 _openclaw_pairing_list() {
   _arguments -C \
-    "--channel[Channel ()]" \
+    "--channel[Channel (discord)]" \
     "--account[Account id (for multi-account channels)]" \
     "--json[Print JSON]"
 }
 
 _openclaw_pairing_approve() {
   _arguments -C \
-    "--channel[Channel ()]" \
+    "--channel[Channel (discord)]" \
     "--account[Account id (for multi-account channels)]" \
     "--notify[Notify the requester on the same channel]"
 }
@@ -3637,6 +3668,59 @@ _openclaw_security() {
     (args)
       case $line[1] in
         (audit) _openclaw_security_audit ;;
+      esac
+      ;;
+  esac
+}
+
+_openclaw_secrets_reload() {
+  _arguments -C \
+    "--json[Output JSON]" \
+    "--url[Gateway WebSocket URL (defaults to gateway.remote.url when configured)]" \
+    "--token[Gateway token (if required)]" \
+    "--timeout[Timeout in ms]" \
+    "--expect-final[Wait for final response (agent)]"
+}
+
+_openclaw_secrets_audit() {
+  _arguments -C \
+    "--check[Exit non-zero when findings are present]" \
+    "--json[Output JSON]"
+}
+
+_openclaw_secrets_configure() {
+  _arguments -C \
+    "--apply[Apply changes immediately after preflight]" \
+    "--yes[Skip apply confirmation prompt]" \
+    "--providers-only[Configure secrets.providers only, skip credential mapping]" \
+    "--skip-provider-setup[Skip provider setup and only map credential fields to existing providers]" \
+    "--plan-out[Write generated plan JSON to a file]" \
+    "--json[Output JSON]"
+}
+
+_openclaw_secrets_apply() {
+  _arguments -C \
+    "--from[Path to plan JSON]" \
+    "--dry-run[Validate/preflight only]" \
+    "--json[Output JSON]"
+}
+
+_openclaw_secrets() {
+  local -a commands
+  local -a options
+  
+  _arguments -C \
+     \
+    "1: :_values 'command' 'reload[Re-resolve secret references and atomically swap runtime snapshot]' 'audit[Audit plaintext secrets, unresolved refs, and precedence drift]' 'configure[Interactive secrets helper (provider setup + SecretRef mapping + preflight)]' 'apply[Apply a previously generated secrets plan]'" \
+    "*::arg:->args"
+
+  case $state in
+    (args)
+      case $line[1] in
+        (reload) _openclaw_secrets_reload ;;
+        (audit) _openclaw_secrets_audit ;;
+        (configure) _openclaw_secrets_configure ;;
+        (apply) _openclaw_secrets_apply ;;
       esac
       ;;
   esac
