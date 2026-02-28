@@ -9,8 +9,9 @@
 5. Monthly Journal File Frontmatter
 6. Project File Frontmatter
 7. `reminders.jsonl` Object Schema
-8. `health-policy.json` Schema
-9. Time Standard
+8. `staged-messages.jsonl` Object Schema
+9. `health-policy.json` Schema
+10. Time Standard
 
 ## Pillar Filesystem Layout
 
@@ -31,10 +32,11 @@ Required pillar contents:
 1. `pillar.md`
 2. `manifesto.md`
 3. `reminders.jsonl`
-4. `contacts/`
-5. `journal/`
-6. `projects/`
-7. `archive/`
+4. `staged-messages.jsonl`
+5. `contacts/`
+6. `journal/`
+7. `projects/`
+8. `archive/`
 
 Removed in v1:
 
@@ -169,6 +171,48 @@ Reminder status enum:
 1. `pending`
 2. `done`
 3. `canceled`
+
+## `staged-messages.jsonl` Object Schema
+
+Path:
+
+```text
+staged-messages.jsonl
+```
+
+One JSON object per line:
+
+```json
+{
+  "id":"stg123abc456def",
+  "pillar_slug":"personal",
+  "origin_channel_id":"123456789012345678",
+  "origin_channel_name":"#pillar-personal",
+  "delivery_method":"email",
+  "recipient":{"email":"person@example.com"},
+  "message_subject":"Follow up",
+  "message_body":"Draft body...",
+  "due_at":"2026-03-01T09:00:00+05:30",
+  "timezone":"Asia/Kolkata",
+  "status":"scheduled",
+  "condition":null,
+  "created_at":"2026-02-27T09:30:00+05:30",
+  "updated_at":"2026-02-27T09:30:00+05:30",
+  "notified_at":null,
+  "completed_at":null,
+  "canceled_at":null,
+  "dispatch_attempts":0,
+  "last_error":null
+}
+```
+
+Enums and notes:
+
+1. `delivery_method`: `email` | `whatsapp`
+2. `status`: `scheduled` | `notified` | `completed` | `canceled` | `failed`
+3. `condition` optional v1 shape:
+   `{"kind":"parent_uncompleted_after_days","parent_stage_id":"...","wait_days":3}`
+4. Reminders are always returned to `origin_channel_id` in the same pillar.
 
 ## `health-policy.json` Schema
 

@@ -19,6 +19,9 @@ import yaml
 STATUSES = ("active", "paused", "retired")
 PROJECT_STATUSES = ("active", "blocked", "waiting", "done")
 REMINDER_STATUSES = ("pending", "done", "canceled")
+STAGE_MESSAGE_STATUSES = ("scheduled", "notified", "completed", "canceled", "failed")
+STAGE_DELIVERY_METHODS = ("email", "whatsapp")
+STAGE_CONDITION_KINDS = ("parent_uncompleted_after_days",)
 LOOP_DAYS = {
     "weekly": 7,
     "monthly": 30,
@@ -68,6 +71,8 @@ ONBOARDING_FOLLOWUPS = {
 }
 HEALTH_POLICY_FILENAME = "health-policy.json"
 MANAGED_DAILY_BRIEF_DESCRIPTION_TAG = "managed-by=qubit;kind=daily-brief"
+MANAGED_STAGE_MESSAGE_DESCRIPTION_TAG = "managed-by=qubit;kind=stage-message"
+SUGGESTION_COOLDOWN_SECONDS = 4 * 60 * 60
 HEALTH_POLICY_DEFAULT = {
     "schema_version": 1,
     "timezone": "Asia/Kolkata",
@@ -188,6 +193,32 @@ def cron_store_path(workspace: Path) -> Path:
 
 def health_policy_path(workspace: Path) -> Path:
     return workspace / "qubit" / "meta" / HEALTH_POLICY_FILENAME
+
+
+def qubit_meta_state_path(workspace: Path) -> Path:
+    return workspace / "qubit" / "meta" / "state.json"
+
+
+def load_qubit_meta_state(workspace: Path) -> dict[str, Any]:
+    path = qubit_meta_state_path(workspace)
+    raw = load_json(path, {"schema_version": 1, "notes": "", "stage_message": {"suggestions": {}}})
+    if not isinstance(raw, dict):
+        raw = {"schema_version": 1}
+    raw.setdefault("schema_version", 1)
+    stage_message = raw.get("stage_message")
+    if not isinstance(stage_message, dict):
+        stage_message = {}
+        raw["stage_message"] = stage_message
+    suggestions = stage_message.get("suggestions")
+    if not isinstance(suggestions, dict):
+        stage_message["suggestions"] = {}
+    return raw
+
+
+def save_qubit_meta_state(workspace: Path, state: dict[str, Any]) -> None:
+    path = qubit_meta_state_path(workspace)
+    ensure_dir(path.parent)
+    save_json(path, state)
 
 
 def default_health_policy() -> dict[str, Any]:
@@ -617,6 +648,11 @@ def ensure_required_pillar_layout(pillar_dir: Path) -> dict[str, list[str]]:
         reminders_file.write_text("", encoding="utf-8")
         created_files.append("reminders.jsonl")
 
+    staged_file = staged_messages_path(pillar_dir)
+    if not staged_file.exists():
+        staged_file.write_text("", encoding="utf-8")
+        created_files.append("staged-messages.jsonl")
+
     return {"files": created_files, "dirs": created_dirs}
 
 
@@ -871,6 +907,148 @@ def upsert_daily_brief_job(cron_path: Path, meta: dict[str, Any]) -> tuple[str, 
     return action, expected_id
 
 
+def managed_stage_message_job_id(pillar_slug: str, stage_id: str) -> str:
+    return f"qubit-stage-message-{pillar_slug}-{stage_id}"
+
+
+def managed_stage_message_job_details(job: dict[str, Any]) -> tuple[str, str] | tuple[None, None]:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    prefix = "qubit-stage-message-"
+    if job_id.startswith(prefix):
+        remainder = job_id.removeprefix(prefix)
+        parts = remainder.rsplit("-", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+
+    description = normalize_text(job.get("description"))
+    if MANAGED_STAGE_MESSAGE_DESCRIPTION_TAG not in description:
+        return None, None
+    pillar_match = re.search(r"(?:^|;)pillar=([a-z0-9-]+)(?:;|$)", description)
+    stage_match = re.search(r"(?:^|;)stage=([a-z0-9-]+)(?:;|$)", description)
+    if not pillar_match or not stage_match:
+        return None, None
+    return pillar_match.group(1), stage_match.group(1)
+
+
+def remove_managed_stage_message_jobs(
+    cron_path: Path,
+    *,
+    pillar_slug: str | None = None,
+    stage_id: str | None = None,
+) -> int:
+    if not cron_path.exists():
+        return 0
+    data = load_cron_jobs(cron_path)
+    jobs = data["jobs"]
+    kept: list[dict[str, Any]] = []
+    removed = 0
+
+    for job in jobs:
+        managed_pillar_slug, managed_stage_id = managed_stage_message_job_details(job)
+        if not managed_pillar_slug or not managed_stage_id:
+            kept.append(job)
+            continue
+        if pillar_slug is not None and managed_pillar_slug != pillar_slug:
+            kept.append(job)
+            continue
+        if stage_id is not None and managed_stage_id != stage_id:
+            kept.append(job)
+            continue
+        removed += 1
+
+    if removed:
+        data["jobs"] = kept
+        save_json(cron_path, data)
+    return removed
+
+
+def build_stage_message_job(meta: dict[str, Any], stage_row: dict[str, Any]) -> dict[str, Any]:
+    pillar_slug = normalize_text(meta.get("pillar_slug"))
+    if not pillar_slug:
+        raise QubitError("Stage message cron build requires pillar_slug")
+    stage_id = normalize_text(stage_row.get("id"))
+    if not stage_id:
+        raise QubitError("Stage message cron build requires stage id")
+    channel_id = normalize_text(meta.get("discord_channel_id"))
+    if not channel_id:
+        raise QubitError("Cannot create stage message cron job without discord_channel_id")
+
+    display_name = str(meta.get("display_name") or pillar_slug)
+    due_at = normalize_text(stage_row.get("due_at"))
+    if not due_at:
+        raise QubitError("Cannot create stage message cron job without due_at")
+    due_dt = parse_iso(due_at, fallback_tz=str(meta.get("timezone") or DEFAULT_TIMEZONE))
+    due_at_iso = due_dt.replace(microsecond=0).isoformat()
+    tz_name = str(stage_row.get("timezone") or meta.get("timezone") or DEFAULT_TIMEZONE)
+    prompt = f"qubit {pillar_slug} stage message dispatch {stage_id}"
+
+    return {
+        "jobId": managed_stage_message_job_id(pillar_slug, stage_id),
+        "name": f"Qubit Stage Message: {display_name} ({stage_id})",
+        "description": f"{MANAGED_STAGE_MESSAGE_DESCRIPTION_TAG};pillar={pillar_slug};stage={stage_id}",
+        "enabled": True,
+        "deleteAfterRun": True,
+        "schedule": {
+            "kind": "at",
+            "at": due_at_iso,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        "delivery": {
+            "mode": "announce",
+            "channel": "discord",
+            "to": f"channel:{channel_id}",
+            "bestEffort": True,
+        },
+    }
+
+
+def upsert_stage_message_job(
+    cron_path: Path,
+    meta: dict[str, Any],
+    stage_row: dict[str, Any],
+) -> tuple[str, str]:
+    data = load_cron_jobs(cron_path)
+    jobs = data["jobs"]
+    pillar_slug = normalize_text(meta.get("pillar_slug"))
+    stage_id = normalize_text(stage_row.get("id"))
+    if not pillar_slug or not stage_id:
+        raise QubitError("Stage message job upsert requires pillar_slug and stage id")
+
+    expected_id = managed_stage_message_job_id(pillar_slug, stage_id)
+    new_job = build_stage_message_job(meta, stage_row)
+
+    matched_indices: list[int] = []
+    for index, job in enumerate(jobs):
+        managed_pillar_slug, managed_stage_id = managed_stage_message_job_details(job)
+        if managed_pillar_slug == pillar_slug and managed_stage_id == stage_id:
+            matched_indices.append(index)
+            continue
+        job_id = normalize_text(job.get("jobId") or job.get("id"))
+        if job_id == expected_id:
+            matched_indices.append(index)
+
+    if not matched_indices:
+        jobs.append(new_job)
+        action = "created"
+    else:
+        primary_index = matched_indices[0]
+        existing = jobs[primary_index]
+        jobs[primary_index] = preserve_runtime_fields(existing, new_job)
+        for duplicate_index in sorted(matched_indices[1:], reverse=True):
+            del jobs[duplicate_index]
+        action = "updated"
+
+    data["jobs"] = jobs
+    save_json(cron_path, data)
+    return action, expected_id
+
+
 def read_projects(pillar_dir: Path) -> list[dict[str, Any]]:
     projects_dir = pillar_dir / "projects"
     if not projects_dir.exists():
@@ -926,6 +1104,41 @@ def get_or_create_pillar_state_by_slug(workspace: Path, pillar_slug: str) -> tup
 def get_or_create_pillar_by_slug(workspace: Path, pillar_slug: str) -> tuple[Path, dict[str, Any]]:
     pillar_dir, meta, _ = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
     return pillar_dir, meta
+
+
+def resolve_pillar_context(
+    workspace: Path,
+    *,
+    pillar: str | None,
+    channel_id: str | None,
+) -> tuple[str, Path, dict[str, Any], str]:
+    if pillar:
+        pillar_slug = slugify(pillar)
+        pillar_dir, meta, pillar_body = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
+        return pillar_slug, pillar_dir, meta, pillar_body
+
+    if not channel_id:
+        raise QubitError("Workflow requires --pillar or --channel-id")
+    parsed_slug, pillar_dir, meta, pillar_body = parse_pillar_from_channel(workspace, channel_id)
+    if not parsed_slug or not pillar_dir or not meta:
+        raise QubitError(f"No pillar mapping found for channel ID {channel_id}")
+    return parsed_slug, pillar_dir, meta, pillar_body
+
+
+def enforce_stage_message_policy(workspace: Path, meta: dict[str, Any]) -> None:
+    policy, _policy_file = load_health_policy(workspace)
+    blacklist = set(policy.get("channel_blacklist") or [])
+    if is_channel_blacklisted(meta, blacklist):
+        channel_name = str(meta.get("discord_channel_name") or "unknown")
+        raise QubitError(f"Stage Message is blocked in blacklisted channel {channel_name!r}")
+    if normalize_text(meta.get("status")).lower() != "active":
+        raise QubitError("Stage Message requires an active pillar")
+    if not normalize_text(meta.get("discord_channel_id")):
+        raise QubitError("Stage Message requires a pillar with a mapped Discord channel ID")
+
+
+def load_stage_rows_for_pillar(pillar_dir: Path) -> list[dict[str, Any]]:
+    return read_staged_messages(staged_messages_path(pillar_dir))
 
 
 def ensure_contact_note(
@@ -1108,6 +1321,332 @@ def parse_due_phrase(phrase: str, tz_name: str) -> str | None:
         ).isoformat()
 
     return None
+
+
+def staged_messages_path(pillar_dir: Path) -> Path:
+    return pillar_dir / "staged-messages.jsonl"
+
+
+def read_staged_messages(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def write_staged_messages(path: Path, rows: list[dict[str, Any]]) -> None:
+    rendered_lines = [json.dumps(row, ensure_ascii=True) for row in rows if isinstance(row, dict)]
+    if rendered_lines:
+        path.write_text("\n".join(rendered_lines) + "\n", encoding="utf-8")
+    else:
+        path.write_text("", encoding="utf-8")
+
+
+def find_stage_message_index(rows: list[dict[str, Any]], stage_id: str) -> int:
+    for index, row in enumerate(rows):
+        if normalize_text(row.get("id")) == stage_id:
+            return index
+    return -1
+
+
+def normalize_delivery_method(value: str) -> str:
+    raw = normalize_text(value).lower().replace(" ", "").replace("_", "").replace("-", "")
+    if raw in ("wa", "whatsapp"):
+        return "whatsapp"
+    if raw in ("email",):
+        return "email"
+    raise QubitError(f"Unsupported delivery method {value!r}; expected one of {STAGE_DELIVERY_METHODS}")
+
+
+def validate_stage_recipient(method: str, recipient_raw: str) -> dict[str, Any]:
+    recipient = normalize_text(recipient_raw)
+    if not recipient:
+        raise QubitError("recipient is required")
+
+    if method == "email":
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", recipient):
+            raise QubitError(f"Invalid email recipient {recipient!r}")
+        return {"email": recipient.lower()}
+
+    if method == "whatsapp":
+        if recipient.startswith("@") and len(recipient) > 1:
+            return {"handle": recipient}
+        if re.match(r"^\+?[0-9][0-9\-\s]{6,}$", recipient):
+            normalized_number = re.sub(r"\s+", "", recipient)
+            return {"phone": normalized_number}
+        raise QubitError("WhatsApp recipient must be a phone number or @handle")
+
+    raise QubitError(f"Unsupported delivery method {method!r}")
+
+
+def parse_stage_due_input(due_raw: str, tz_name: str) -> str:
+    candidate = normalize_text(due_raw)
+    if not candidate:
+        raise QubitError("due is required")
+    due_iso = parse_due_phrase(candidate, tz_name)
+    if due_iso is not None:
+        return due_iso
+    try:
+        return parse_iso(candidate, fallback_tz=tz_name).replace(microsecond=0).isoformat()
+    except Exception as error:
+        raise QubitError(
+            f"Could not parse due date/time {candidate!r}. Use ISO or simple forms like 'tomorrow at 09:00'."
+        ) from error
+
+
+def parse_stage_condition(parent_stage_id: str | None, wait_days: int | None) -> dict[str, Any] | None:
+    parent = normalize_text(parent_stage_id)
+    if not parent and wait_days is None:
+        return None
+    if not parent or wait_days is None:
+        raise QubitError("Conditional follow-up requires both --parent-stage-id and --wait-days")
+    wait_days_int = int(wait_days)
+    if wait_days_int <= 0:
+        raise QubitError("--wait-days must be > 0")
+    return {
+        "kind": "parent_uncompleted_after_days",
+        "parent_stage_id": parent,
+        "wait_days": wait_days_int,
+    }
+
+
+def stage_condition_allows_dispatch(
+    stage_row: dict[str, Any],
+    all_rows: list[dict[str, Any]],
+    now_dt: datetime,
+) -> tuple[bool, str | None]:
+    condition = stage_row.get("condition")
+    if not condition:
+        return True, None
+    if not isinstance(condition, dict):
+        return False, "invalid_condition"
+    kind = normalize_text(condition.get("kind"))
+    if kind not in STAGE_CONDITION_KINDS:
+        return False, "unsupported_condition_kind"
+    if kind != "parent_uncompleted_after_days":
+        return False, "unsupported_condition_kind"
+
+    parent_stage_id = normalize_text(condition.get("parent_stage_id"))
+    if not parent_stage_id:
+        return False, "missing_parent_stage_id"
+    parent_index = find_stage_message_index(all_rows, parent_stage_id)
+    if parent_index < 0:
+        return False, "missing_parent_stage"
+    parent = all_rows[parent_index]
+    parent_status = normalize_text(parent.get("status"))
+    if parent_status == "completed":
+        return False, "parent_completed"
+
+    try:
+        wait_days = int(condition.get("wait_days"))
+    except Exception:
+        return False, "invalid_wait_days"
+    if wait_days <= 0:
+        return False, "invalid_wait_days"
+
+    try:
+        parent_due_at = parse_iso(str(parent.get("due_at")))
+    except Exception:
+        return False, "invalid_parent_due_at"
+
+    if now_dt < parent_due_at + timedelta(days=wait_days):
+        return False, "wait_window_not_elapsed"
+    return True, None
+
+
+def format_stage_copy_block(stage_row: dict[str, Any], display_name: str) -> str:
+    method = normalize_text(stage_row.get("delivery_method")).lower()
+    recipient = stage_row.get("recipient") or {}
+    if not isinstance(recipient, dict):
+        recipient = {}
+    due_at = normalize_text(stage_row.get("due_at"))
+    body = normalize_text(stage_row.get("message_body"))
+    if not body:
+        body = "(empty message body)"
+
+    if method == "email":
+        to_value = normalize_text(recipient.get("email")) or "(missing email recipient)"
+        subject = normalize_text(stage_row.get("message_subject")) or "(no subject)"
+        return (
+            "```text\n"
+            f"Stage Message Ready | {display_name}\n"
+            "Method: Email\n"
+            f"Recipient: {to_value}\n"
+            f"Due: {due_at}\n\n"
+            f"Subject: {subject}\n\n"
+            f"{body}\n"
+            "```"
+        )
+
+    if method == "whatsapp":
+        to_value = normalize_text(recipient.get("phone") or recipient.get("handle")) or "(missing WhatsApp recipient)"
+        return (
+            "```text\n"
+            f"Stage Message Ready | {display_name}\n"
+            "Method: WhatsApp\n"
+            f"Recipient: {to_value}\n"
+            f"Due: {due_at}\n\n"
+            f"{body}\n"
+            "```"
+        )
+
+    return (
+        "```text\n"
+        f"Stage Message Ready | {display_name}\n"
+        f"Method: {method or 'unknown'}\n"
+        f"Due: {due_at}\n\n"
+        f"{body}\n"
+        "```"
+    )
+
+
+def should_offer_stage_suggestion(
+    workspace: Path,
+    pillar_slug: str,
+    now_dt: datetime,
+) -> bool:
+    state = load_qubit_meta_state(workspace)
+    suggestion_state = state.get("stage_message") or {}
+    if not isinstance(suggestion_state, dict):
+        return True
+    suggestions = suggestion_state.get("suggestions") or {}
+    if not isinstance(suggestions, dict):
+        return True
+    last_raw = suggestions.get(pillar_slug)
+    if not last_raw:
+        return True
+    try:
+        last_dt = parse_iso(str(last_raw))
+    except Exception:
+        return True
+    return (now_dt - last_dt).total_seconds() >= SUGGESTION_COOLDOWN_SECONDS
+
+
+def mark_stage_suggestion_sent(workspace: Path, pillar_slug: str, now_dt: datetime) -> None:
+    state = load_qubit_meta_state(workspace)
+    state.setdefault("schema_version", 1)
+    stage_message = state.get("stage_message")
+    if not isinstance(stage_message, dict):
+        stage_message = {}
+        state["stage_message"] = stage_message
+    suggestions = stage_message.get("suggestions")
+    if not isinstance(suggestions, dict):
+        suggestions = {}
+        stage_message["suggestions"] = suggestions
+    suggestions[pillar_slug] = now_dt.replace(microsecond=0).isoformat()
+    save_qubit_meta_state(workspace, state)
+
+
+def infer_stage_message_suggestion(
+    message: str,
+    tz_name: str,
+) -> dict[str, Any] | None:
+    text = normalize_text(message)
+    if not text:
+        return None
+
+    trigger_patterns = [
+        r"\bsend later\b",
+        r"\bdeferred send\b",
+        r"\bscheduled draft\b",
+        r"\bstage send\b",
+        r"\bqueue message\b",
+        r"\bsend intent\b",
+        r"\bfollow[\s-]?up\b",
+        r"\bcheck in\b",
+        r"\bcircle back\b",
+    ]
+    if not any(re.search(pattern, text, re.IGNORECASE) for pattern in trigger_patterns):
+        if not re.search(r"\b(email|whatsapp)\b", text, re.IGNORECASE):
+            return None
+        if not re.search(r"\b(today|tomorrow|later|next|by|at|on)\b", text, re.IGNORECASE):
+            return None
+
+    method = "email"
+    if re.search(r"\bwhatsapp\b|\bwa\b", text, re.IGNORECASE):
+        method = "whatsapp"
+    elif re.search(r"\bemail\b", text, re.IGNORECASE):
+        method = "email"
+
+    inferred_recipient: str | None = None
+    email_match = re.search(r"\bto\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b", text, re.IGNORECASE)
+    if email_match:
+        inferred_recipient = email_match.group(1)
+    else:
+        whatsapp_match = re.search(r"\bto\s+(@[A-Za-z0-9_.-]+|\+?[0-9][0-9\-\s]{6,})\b", text, re.IGNORECASE)
+        if whatsapp_match:
+            inferred_recipient = normalize_text(whatsapp_match.group(1))
+
+    due_iso: str | None = None
+    due_assumed = False
+    due_source = ""
+    due_phrase_match = re.search(
+        r"\b(?:on|at|by)\s+(.+?)(?:$|,|;| and )",
+        text,
+        re.IGNORECASE,
+    )
+    if due_phrase_match:
+        due_source = normalize_text(due_phrase_match.group(1))
+        due_iso = parse_due_phrase(due_source, tz_name)
+
+    now_local = now_in_tz(tz_name)
+    if due_iso is None:
+        day_match = re.search(
+            r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if day_match:
+            day_name = day_match.group(1).lower()
+            weekday_map = {
+                "monday": 0,
+                "tuesday": 1,
+                "wednesday": 2,
+                "thursday": 3,
+                "friday": 4,
+                "saturday": 5,
+                "sunday": 6,
+            }
+            target_weekday = weekday_map[day_name]
+            delta_days = (target_weekday - now_local.weekday()) % 7
+            if delta_days == 0:
+                delta_days = 7
+            target_day = (now_local + timedelta(days=delta_days)).date()
+            due_iso = datetime(
+                target_day.year,
+                target_day.month,
+                target_day.day,
+                9,
+                0,
+                tzinfo=ZoneInfo(tz_name),
+            ).isoformat()
+            due_assumed = True
+            due_source = f"{day_name} (assumed 09:00)"
+
+    if due_iso is None and re.search(r"\b(tomorrow|today|later|next)\b", text, re.IGNORECASE):
+        due_iso = parse_due_phrase("tomorrow at 09:00", tz_name)
+        due_assumed = True
+        due_source = "tomorrow (assumed 09:00)"
+
+    return {
+        "confidence": 0.68 if due_assumed else 0.75,
+        "delivery_method": method,
+        "recipient_hint": inferred_recipient,
+        "due_at": due_iso,
+        "due_assumed": due_assumed,
+        "due_source": due_source,
+    }
 
 
 def infer_actions(message: str, pillar_slug: str, tz_name: str) -> tuple[list[Action], list[str]]:
@@ -1421,6 +1960,29 @@ def parse_explicit_command(message: str) -> tuple[str, dict[str, Any]] | None:
         ("daily-brief", re.compile(r"^\s*qubit\s+(.+?)\s+daily\s+brief\s*$", re.IGNORECASE)),
         ("review-weekly", re.compile(r"^\s*qubit\s+(.+?)\s+review\s+weekly\s*$", re.IGNORECASE)),
         (
+            "stage-message-list",
+            re.compile(r"^\s*qubit\s+(.+?)\s+stage\s+message\s+list\s*$", re.IGNORECASE),
+        ),
+        (
+            "stage-message-cancel",
+            re.compile(r"^\s*qubit\s+(.+?)\s+stage\s+message\s+cancel\s+([a-z0-9-]+)\s*$", re.IGNORECASE),
+        ),
+        (
+            "stage-message-complete",
+            re.compile(r"^\s*qubit\s+(.+?)\s+stage\s+message\s+complete\s+([a-z0-9-]+)\s*$", re.IGNORECASE),
+        ),
+        (
+            "stage-message-dispatch",
+            re.compile(r"^\s*qubit\s+(.+?)\s+stage\s+message\s+dispatch\s+([a-z0-9-]+)\s*$", re.IGNORECASE),
+        ),
+        (
+            "stage-message-alias",
+            re.compile(
+                r"^\s*qubit\s+(.+?)\s+(scheduled\s+draft|deferred\s+send|send\s+intent|queue\s+message|send\s+later|stage\s+send)\s*$",
+                re.IGNORECASE,
+            ),
+        ),
+        (
             "add-project",
             re.compile(
                 r"^\s*qubit\s+(.+?)\s+add\s+project\s+(?:[\"'](.+?)[\"']|(.*))\s*$",
@@ -1442,6 +2004,18 @@ def parse_explicit_command(message: str) -> tuple[str, dict[str, Any]] | None:
             if not title:
                 raise QubitError("add project command requires a project title")
             return workflow, {"pillar": pillar, "title": title}
+
+        if workflow in ("stage-message-cancel", "stage-message-complete", "stage-message-dispatch"):
+            pillar = match.group(1).strip()
+            stage_id = normalize_text(match.group(2))
+            if not stage_id:
+                raise QubitError(f"{workflow} command requires a stage id")
+            return workflow, {"pillar": pillar, "stage_id": stage_id}
+
+        if workflow == "stage-message-alias":
+            pillar = match.group(1).strip()
+            alias = normalize_text(match.group(2)).lower()
+            return workflow, {"pillar": pillar, "alias": alias}
 
         pillar = match.group(1).strip()
         return workflow, {"pillar": pillar}
@@ -1811,6 +2385,472 @@ def cmd_review_weekly(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_stage_message_create(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    delivery_method = normalize_delivery_method(args.delivery_method)
+    recipient = validate_stage_recipient(delivery_method, args.recipient)
+    message_body = normalize_text(args.body)
+    if not message_body:
+        raise QubitError("message body is required")
+    message_subject = normalize_text(args.subject)
+    if delivery_method == "email" and not message_subject:
+        raise QubitError("email delivery requires --subject")
+    if delivery_method == "whatsapp":
+        message_subject = ""
+
+    stage_rows = load_stage_rows_for_pillar(pillar_dir)
+    condition = parse_stage_condition(args.parent_stage_id, args.wait_days)
+    due_at = normalize_text(args.due)
+    if condition and not due_at:
+        parent_idx = find_stage_message_index(stage_rows, normalize_text(condition.get("parent_stage_id")))
+        if parent_idx < 0:
+            raise QubitError(f"Conditional parent stage id not found: {condition.get('parent_stage_id')}")
+        parent_row = stage_rows[parent_idx]
+        try:
+            parent_due = parse_iso(str(parent_row.get("due_at")), fallback_tz=tz_name)
+        except Exception as error:
+            raise QubitError("Parent stage message has invalid due_at; cannot derive conditional due date") from error
+        wait_days = int(condition["wait_days"])
+        due_at = (parent_due + timedelta(days=wait_days)).replace(microsecond=0).isoformat()
+
+    due_iso = parse_stage_due_input(due_at, tz_name)
+    stage_id = f"stg{uuid.uuid4().hex[:12]}"
+    timestamp = now_iso(tz_name)
+    row = {
+        "id": stage_id,
+        "pillar_slug": pillar_slug,
+        "origin_channel_id": str(meta.get("discord_channel_id") or ""),
+        "origin_channel_name": str(meta.get("discord_channel_name") or ""),
+        "delivery_method": delivery_method,
+        "recipient": recipient,
+        "message_subject": message_subject if delivery_method == "email" else None,
+        "message_body": message_body,
+        "due_at": due_iso,
+        "timezone": tz_name,
+        "status": "scheduled",
+        "condition": condition,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "notified_at": None,
+        "completed_at": None,
+        "canceled_at": None,
+        "dispatch_attempts": 0,
+        "last_error": None,
+    }
+    stage_rows.append(row)
+    write_staged_messages(staged_messages_path(pillar_dir), stage_rows)
+
+    cron_path = cron_store_path(workspace)
+    ensure_dir(cron_path.parent)
+    cron_action, cron_job_id = upsert_stage_message_job(cron_path, meta, row)
+    return {
+        "status": "ok",
+        "workflow": "stage-message-create",
+        "pillar_slug": pillar_slug,
+        "stage_message_id": stage_id,
+        "due_at": due_iso,
+        "cron": {
+            "action": cron_action,
+            "jobId": cron_job_id,
+            "store": str(cron_path),
+        },
+    }
+
+
+def cmd_stage_message_list(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    status_filter = normalize_text(args.status).lower()
+    if status_filter and status_filter != "all" and status_filter not in STAGE_MESSAGE_STATUSES:
+        raise QubitError(f"--status must be one of {STAGE_MESSAGE_STATUSES} or 'all'")
+
+    rows = load_stage_rows_for_pillar(pillar_dir)
+    if status_filter and status_filter != "all":
+        rows = [row for row in rows if normalize_text(row.get("status")).lower() == status_filter]
+    rows = sorted(rows, key=lambda row: normalize_text(row.get("due_at")))
+    return {
+        "status": "ok",
+        "workflow": "stage-message-list",
+        "pillar_slug": pillar_slug,
+        "stage_messages": rows,
+    }
+
+
+def cmd_stage_message_edit(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    stage_id = normalize_text(args.stage_id)
+    if not stage_id:
+        raise QubitError("--stage-id is required")
+    rows = load_stage_rows_for_pillar(pillar_dir)
+    row_index = find_stage_message_index(rows, stage_id)
+    if row_index < 0:
+        raise QubitError(f"Unknown stage message id {stage_id!r} in pillar {pillar_slug!r}")
+
+    row = dict(rows[row_index])
+    status_before = normalize_text(row.get("status")).lower() or "scheduled"
+    if status_before in ("completed", "canceled"):
+        raise QubitError(f"Stage message {stage_id} is {status_before} and cannot be edited")
+
+    condition = row.get("condition")
+    if args.clear_condition:
+        condition = None
+    elif args.parent_stage_id or args.wait_days is not None:
+        condition = parse_stage_condition(args.parent_stage_id, args.wait_days)
+    if isinstance(condition, dict) and normalize_text(condition.get("parent_stage_id")) == stage_id:
+        raise QubitError("A staged message cannot reference itself as a conditional parent")
+
+    delivery_method = row.get("delivery_method")
+    if args.delivery_method:
+        delivery_method = normalize_delivery_method(args.delivery_method)
+        row["delivery_method"] = delivery_method
+
+    if args.recipient:
+        row["recipient"] = validate_stage_recipient(str(delivery_method), args.recipient)
+    elif args.delivery_method:
+        existing_recipient = row.get("recipient") or {}
+        if not isinstance(existing_recipient, dict):
+            existing_recipient = {}
+        fallback_value = normalize_text(
+            existing_recipient.get("email")
+            or existing_recipient.get("phone")
+            or existing_recipient.get("handle")
+        )
+        if not fallback_value:
+            raise QubitError("Changing delivery method requires recipient details")
+        try:
+            row["recipient"] = validate_stage_recipient(str(delivery_method), fallback_value)
+        except QubitError as error:
+            raise QubitError("Changing delivery method requires a compatible --recipient value") from error
+
+    if args.subject is not None:
+        row["message_subject"] = normalize_text(args.subject) or None
+    if args.body is not None:
+        body = normalize_text(args.body)
+        if not body:
+            raise QubitError("message body cannot be empty")
+        row["message_body"] = body
+
+    if normalize_text(str(row.get("delivery_method"))).lower() == "email":
+        if not normalize_text(row.get("message_subject")):
+            raise QubitError("email stage messages require message_subject")
+    else:
+        row["message_subject"] = None
+
+    due_input = normalize_text(args.due)
+    if due_input:
+        row["due_at"] = parse_stage_due_input(due_input, tz_name)
+    elif condition and args.due is None and (args.parent_stage_id or args.wait_days is not None):
+        parent_idx = find_stage_message_index(rows, normalize_text(condition.get("parent_stage_id")))
+        if parent_idx < 0:
+            raise QubitError(f"Conditional parent stage id not found: {condition.get('parent_stage_id')}")
+        parent_due = parse_iso(str(rows[parent_idx].get("due_at")), fallback_tz=tz_name)
+        row["due_at"] = (parent_due + timedelta(days=int(condition["wait_days"]))).replace(microsecond=0).isoformat()
+
+    row["condition"] = condition
+    row["updated_at"] = now_iso(tz_name)
+    if args.restage:
+        row["status"] = "scheduled"
+        row["notified_at"] = None
+        row["canceled_at"] = None
+        row["completed_at"] = None
+        row["last_error"] = None
+
+    rows[row_index] = row
+    write_staged_messages(staged_messages_path(pillar_dir), rows)
+
+    cron_path = cron_store_path(workspace)
+    ensure_dir(cron_path.parent)
+    cron: dict[str, Any]
+    if normalize_text(row.get("status")).lower() == "scheduled":
+        cron_action, cron_job_id = upsert_stage_message_job(cron_path, meta, row)
+        cron = {"action": cron_action, "jobId": cron_job_id, "store": str(cron_path)}
+    else:
+        removed = remove_managed_stage_message_jobs(cron_path, pillar_slug=pillar_slug, stage_id=stage_id)
+        cron = {"action": "removed", "removed_jobs": removed, "store": str(cron_path)}
+
+    return {
+        "status": "ok",
+        "workflow": "stage-message-edit",
+        "pillar_slug": pillar_slug,
+        "stage_message_id": stage_id,
+        "cron": cron,
+    }
+
+
+def cmd_stage_message_cancel(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    stage_id = normalize_text(args.stage_id)
+    rows = load_stage_rows_for_pillar(pillar_dir)
+    row_index = find_stage_message_index(rows, stage_id)
+    if row_index < 0:
+        raise QubitError(f"Unknown stage message id {stage_id!r} in pillar {pillar_slug!r}")
+    row = dict(rows[row_index])
+    status_before = normalize_text(row.get("status")).lower()
+    if status_before == "canceled":
+        return {
+            "status": "ok",
+            "workflow": "stage-message-cancel",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "already_canceled",
+        }
+    row["status"] = "canceled"
+    row["canceled_at"] = now_iso(tz_name)
+    row["updated_at"] = row["canceled_at"]
+    rows[row_index] = row
+    write_staged_messages(staged_messages_path(pillar_dir), rows)
+
+    cron_path = cron_store_path(workspace)
+    removed = remove_managed_stage_message_jobs(cron_path, pillar_slug=pillar_slug, stage_id=stage_id)
+    return {
+        "status": "ok",
+        "workflow": "stage-message-cancel",
+        "pillar_slug": pillar_slug,
+        "stage_message_id": stage_id,
+        "removed_jobs": removed,
+    }
+
+
+def cmd_stage_message_complete(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    stage_id = normalize_text(args.stage_id)
+    rows = load_stage_rows_for_pillar(pillar_dir)
+    row_index = find_stage_message_index(rows, stage_id)
+    if row_index < 0:
+        raise QubitError(f"Unknown stage message id {stage_id!r} in pillar {pillar_slug!r}")
+    row = dict(rows[row_index])
+    status_before = normalize_text(row.get("status")).lower()
+    if status_before == "completed":
+        return {
+            "status": "ok",
+            "workflow": "stage-message-complete",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "already_completed",
+        }
+    row["status"] = "completed"
+    row["completed_at"] = now_iso(tz_name)
+    row["updated_at"] = row["completed_at"]
+    rows[row_index] = row
+    write_staged_messages(staged_messages_path(pillar_dir), rows)
+
+    cron_path = cron_store_path(workspace)
+    removed = remove_managed_stage_message_jobs(cron_path, pillar_slug=pillar_slug, stage_id=stage_id)
+    return {
+        "status": "ok",
+        "workflow": "stage-message-complete",
+        "pillar_slug": pillar_slug,
+        "stage_message_id": stage_id,
+        "removed_jobs": removed,
+    }
+
+
+def cmd_stage_message_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    pillar_slug, pillar_dir, meta, pillar_body = resolve_pillar_context(
+        workspace,
+        pillar=args.pillar,
+        channel_id=args.channel_id,
+    )
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    meta, pillar_body, _ = ensure_lifecycle_meta(
+        pillar_dir=pillar_dir,
+        meta=meta,
+        body=pillar_body,
+        tz_name=tz_name,
+        persist=True,
+    )
+    enforce_stage_message_policy(workspace, meta)
+
+    stage_id = normalize_text(args.stage_id)
+    if not stage_id:
+        raise QubitError("--stage-id is required")
+    rows = load_stage_rows_for_pillar(pillar_dir)
+    row_index = find_stage_message_index(rows, stage_id)
+    if row_index < 0:
+        raise QubitError(f"Unknown stage message id {stage_id!r} in pillar {pillar_slug!r}")
+
+    row = dict(rows[row_index])
+    now_dt = parse_iso(args.now, fallback_tz=tz_name) if args.now else now_in_tz(tz_name)
+    timestamp = now_dt.replace(microsecond=0).isoformat()
+    status_before = normalize_text(row.get("status")).lower() or "scheduled"
+    if status_before not in ("scheduled", "failed"):
+        return {
+            "status": "ok",
+            "workflow": "stage-message-dispatch",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "skipped",
+            "reason": f"status_{status_before}",
+        }
+
+    try:
+        due_dt = parse_iso(str(row.get("due_at")), fallback_tz=tz_name)
+    except Exception:
+        row["status"] = "failed"
+        row["dispatch_attempts"] = int(row.get("dispatch_attempts") or 0) + 1
+        row["last_error"] = "invalid_due_at"
+        row["updated_at"] = timestamp
+        rows[row_index] = row
+        write_staged_messages(staged_messages_path(pillar_dir), rows)
+        return {
+            "status": "ok",
+            "workflow": "stage-message-dispatch",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "failed",
+            "reason": "invalid_due_at",
+        }
+
+    if due_dt > now_dt:
+        return {
+            "status": "ok",
+            "workflow": "stage-message-dispatch",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "skipped",
+            "reason": "not_due_yet",
+        }
+
+    allowed, reason = stage_condition_allows_dispatch(row, rows, now_dt)
+    if not allowed:
+        if reason == "parent_completed":
+            row["status"] = "canceled"
+            row["canceled_at"] = timestamp
+            row["updated_at"] = timestamp
+            row["last_error"] = None
+            rows[row_index] = row
+            write_staged_messages(staged_messages_path(pillar_dir), rows)
+            cron_path = cron_store_path(workspace)
+            _ = remove_managed_stage_message_jobs(cron_path, pillar_slug=pillar_slug, stage_id=stage_id)
+            return {
+                "status": "ok",
+                "workflow": "stage-message-dispatch",
+                "pillar_slug": pillar_slug,
+                "stage_message_id": stage_id,
+                "action": "canceled",
+                "reason": "parent_completed",
+            }
+        if reason == "wait_window_not_elapsed":
+            return {
+                "status": "ok",
+                "workflow": "stage-message-dispatch",
+                "pillar_slug": pillar_slug,
+                "stage_message_id": stage_id,
+                "action": "skipped",
+                "reason": reason,
+            }
+        row["status"] = "failed"
+        row["dispatch_attempts"] = int(row.get("dispatch_attempts") or 0) + 1
+        row["last_error"] = reason
+        row["updated_at"] = timestamp
+        rows[row_index] = row
+        write_staged_messages(staged_messages_path(pillar_dir), rows)
+        return {
+            "status": "ok",
+            "workflow": "stage-message-dispatch",
+            "pillar_slug": pillar_slug,
+            "stage_message_id": stage_id,
+            "action": "failed",
+            "reason": reason,
+        }
+
+    copy_block = format_stage_copy_block(row, str(meta.get("display_name") or pillar_slug))
+    row["status"] = "notified"
+    row["notified_at"] = timestamp
+    row["updated_at"] = timestamp
+    row["last_error"] = None
+    row["dispatch_attempts"] = int(row.get("dispatch_attempts") or 0) + 1
+    rows[row_index] = row
+    write_staged_messages(staged_messages_path(pillar_dir), rows)
+
+    cron_path = cron_store_path(workspace)
+    _ = remove_managed_stage_message_jobs(cron_path, pillar_slug=pillar_slug, stage_id=stage_id)
+    return {
+        "status": "ok",
+        "workflow": "stage-message-dispatch",
+        "pillar_slug": pillar_slug,
+        "stage_message_id": stage_id,
+        "action": "notified",
+        "channel_id": str(meta.get("discord_channel_id") or ""),
+        "message": copy_block,
+    }
+
+
 def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     mode = "check" if bool(args.check) else "apply"
@@ -2141,6 +3181,8 @@ def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
     scan_now = parse_iso(args.now) if args.now else now_in_tz(DEFAULT_TIMEZONE)
 
     due_actions: list[dict[str, Any]] = []
+    policy, _policy_file = load_health_policy(workspace)
+    blacklist = set(policy.get("channel_blacklist") or [])
 
     for pillar_dir in list_active_pillars(workspace):
         meta, body = load_pillar_meta(pillar_dir)
@@ -2187,6 +3229,41 @@ def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
                     "due_at": reminder.get("due_at"),
                 }
             )
+
+        if not is_channel_blacklisted(meta, blacklist):
+            stage_rows = load_stage_rows_for_pillar(pillar_dir)
+            for stage_row in stage_rows:
+                if normalize_text(stage_row.get("status")).lower() != "scheduled":
+                    continue
+                stage_due_at = stage_row.get("due_at")
+                if not stage_due_at:
+                    continue
+                try:
+                    stage_due_dt = parse_iso(str(stage_due_at), fallback_tz=tz_name)
+                except Exception:
+                    continue
+                if stage_due_dt > local_now:
+                    continue
+                allowed, condition_reason = stage_condition_allows_dispatch(stage_row, stage_rows, local_now)
+                if not allowed and condition_reason == "wait_window_not_elapsed":
+                    continue
+                stage_id = normalize_text(stage_row.get("id"))
+                if not stage_id:
+                    continue
+                due_actions.append(
+                    {
+                        "type": "stage_message",
+                        "pillar_slug": pillar_slug,
+                        "display_name": display_name,
+                        "channel_id": meta.get("discord_channel_id"),
+                        "urgent": True,
+                        "stage_message_id": stage_id,
+                        "due_at": stage_due_at,
+                        "condition_reason": condition_reason,
+                        "copy_ready": format_stage_copy_block(stage_row, display_name),
+                        "dispatch_command": f"qubit {pillar_slug} stage message dispatch {stage_id}",
+                    }
+                )
 
         if meta.get("onboarding_status") != "completed":
             continue
@@ -2321,6 +3398,75 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
             result["source"] = "explicit-command"
             return result
 
+        if workflow == "stage-message-list":
+            result = cmd_stage_message_list(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    pillar=payload["pillar"],
+                    channel_id=None,
+                    status="all",
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
+
+        if workflow == "stage-message-cancel":
+            result = cmd_stage_message_cancel(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    pillar=payload["pillar"],
+                    channel_id=None,
+                    stage_id=payload["stage_id"],
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
+
+        if workflow == "stage-message-complete":
+            result = cmd_stage_message_complete(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    pillar=payload["pillar"],
+                    channel_id=None,
+                    stage_id=payload["stage_id"],
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
+
+        if workflow == "stage-message-dispatch":
+            result = cmd_stage_message_dispatch(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    pillar=payload["pillar"],
+                    channel_id=None,
+                    stage_id=payload["stage_id"],
+                    now=None,
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
+
+        if workflow == "stage-message-alias":
+            pillar_slug = slugify(payload["pillar"])
+            result = {
+                "status": "ok",
+                "workflow": "stage-message-intent",
+                "pillar_slug": pillar_slug,
+                "alias": payload["alias"],
+                "clarification": {
+                    "question": "Stage Message intent detected. Share delivery method, recipient, due time, and message body.",
+                    "options": [
+                        "Use email",
+                        "Use WhatsApp",
+                        "Cancel this intent",
+                    ],
+                    "notes": [],
+                },
+            }
+            result["source"] = "explicit-command"
+            return result
+
     if args.pillar:
         pillar_slug = slugify(args.pillar)
         pillar_dir, meta, pillar_body = get_or_create_pillar_state_by_slug(workspace, pillar_slug)
@@ -2380,6 +3526,38 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
+    stage_message_suggestion = None
+    if not args.autonomous:
+        policy, _policy_file = load_health_policy(workspace)
+        blacklist = set(policy.get("channel_blacklist") or [])
+        if not is_channel_blacklisted(meta, blacklist):
+            now_dt = now_in_tz(tz_name)
+            if should_offer_stage_suggestion(workspace, pillar_slug, now_dt):
+                suggestion = infer_stage_message_suggestion(message, tz_name)
+                if suggestion:
+                    due_text = normalize_text(suggestion.get("due_at")) or "tomorrow at 09:00 (Asia/Kolkata)"
+                    method_text = normalize_text(suggestion.get("delivery_method")) or "email"
+                    recipient_text = normalize_text(suggestion.get("recipient_hint")) or "(recipient needed)"
+                    assumption_note = ""
+                    if bool(suggestion.get("due_assumed")):
+                        due_source = normalize_text(suggestion.get("due_source")) or "context"
+                        assumption_note = (
+                            f" I assumed {due_source}. Confirm or adjust before scheduling."
+                        )
+                    stage_message_suggestion = {
+                        "question": (
+                            "Want me to stage this message for later? "
+                            f"Proposed method={method_text}, recipient={recipient_text}, due={due_text}.{assumption_note}"
+                        ),
+                        "options": [
+                            "Stage now with these defaults",
+                            "Adjust details before staging",
+                            "Skip staging for now",
+                        ],
+                        "proposal": suggestion,
+                    }
+                    mark_stage_suggestion_sent(workspace, pillar_slug, now_dt)
+
     clarification = None
     if (uncertainties or pending_confirmation) and not args.autonomous:
         options = []
@@ -2403,6 +3581,7 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
         "pending_confirmation": pending_confirmation,
         "uncertainties": uncertainties,
         "clarification": clarification,
+        "stage_message_suggestion": stage_message_suggestion,
     }
 
 
@@ -2449,6 +3628,58 @@ def build_parser() -> argparse.ArgumentParser:
     review_weekly.add_argument("--summary")
     review_weekly.set_defaults(func=cmd_review_weekly)
 
+    stage_create = subparsers.add_parser("stage-message-create", help="Create a staged message for future reminder delivery")
+    stage_create.add_argument("--pillar")
+    stage_create.add_argument("--channel-id")
+    stage_create.add_argument("--delivery-method", required=True, choices=STAGE_DELIVERY_METHODS)
+    stage_create.add_argument("--recipient", required=True)
+    stage_create.add_argument("--subject", default="")
+    stage_create.add_argument("--body", required=True)
+    stage_create.add_argument("--due")
+    stage_create.add_argument("--parent-stage-id")
+    stage_create.add_argument("--wait-days", type=int)
+    stage_create.set_defaults(func=cmd_stage_message_create)
+
+    stage_list = subparsers.add_parser("stage-message-list", help="List staged messages in a pillar")
+    stage_list.add_argument("--pillar")
+    stage_list.add_argument("--channel-id")
+    stage_list.add_argument("--status", default="all")
+    stage_list.set_defaults(func=cmd_stage_message_list)
+
+    stage_edit = subparsers.add_parser("stage-message-edit", help="Edit a staged message")
+    stage_edit.add_argument("--pillar")
+    stage_edit.add_argument("--channel-id")
+    stage_edit.add_argument("--stage-id", required=True)
+    stage_edit.add_argument("--delivery-method", choices=STAGE_DELIVERY_METHODS)
+    stage_edit.add_argument("--recipient")
+    stage_edit.add_argument("--subject")
+    stage_edit.add_argument("--body")
+    stage_edit.add_argument("--due")
+    stage_edit.add_argument("--parent-stage-id")
+    stage_edit.add_argument("--wait-days", type=int)
+    stage_edit.add_argument("--clear-condition", action="store_true")
+    stage_edit.add_argument("--restage", action="store_true")
+    stage_edit.set_defaults(func=cmd_stage_message_edit)
+
+    stage_cancel = subparsers.add_parser("stage-message-cancel", help="Cancel a staged message")
+    stage_cancel.add_argument("--pillar")
+    stage_cancel.add_argument("--channel-id")
+    stage_cancel.add_argument("--stage-id", required=True)
+    stage_cancel.set_defaults(func=cmd_stage_message_cancel)
+
+    stage_complete = subparsers.add_parser("stage-message-complete", help="Mark a staged message as completed")
+    stage_complete.add_argument("--pillar")
+    stage_complete.add_argument("--channel-id")
+    stage_complete.add_argument("--stage-id", required=True)
+    stage_complete.set_defaults(func=cmd_stage_message_complete)
+
+    stage_dispatch = subparsers.add_parser("stage-message-dispatch", help="Dispatch a staged message when due")
+    stage_dispatch.add_argument("--pillar")
+    stage_dispatch.add_argument("--channel-id")
+    stage_dispatch.add_argument("--stage-id", required=True)
+    stage_dispatch.add_argument("--now", help="ISO datetime override")
+    stage_dispatch.set_defaults(func=cmd_stage_message_dispatch)
+
     sync_cron = subparsers.add_parser("sync-cron", help="Ensure daily brief cron entry for a pillar")
     sync_cron.add_argument("--pillar", required=True)
     sync_cron.set_defaults(func=cmd_sync_cron)
@@ -2460,7 +3691,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_heartbeat = subparsers.add_parser("sync-heartbeat", help="Write global heartbeat checklist")
     sync_heartbeat.set_defaults(func=cmd_sync_heartbeat)
 
-    due_scan = subparsers.add_parser("due-scan", help="Scan active pillars for due reminders/loops")
+    due_scan = subparsers.add_parser("due-scan", help="Scan active pillars for due reminders/staged messages/loops")
     due_scan.add_argument("--now", help="ISO datetime override")
     due_scan.set_defaults(func=cmd_due_scan)
 
@@ -2515,6 +3746,10 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         "completed",
         "reason",
         "checked_pillars",
+        "stage_message_id",
+        "due_at",
+        "removed_jobs",
+        "channel_id",
     ):
         if key in result and result[key] is not None:
             lines.append(f"{key}: {result[key]}")
@@ -2547,8 +3782,24 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         for option in clarification.get("options", []):
             lines.append(f"- option: {option}")
 
+    if result.get("stage_message_suggestion"):
+        suggestion = result["stage_message_suggestion"]
+        lines.append("stage_message_suggestion:")
+        lines.append(f"- {suggestion['question']}")
+        for option in suggestion.get("options", []):
+            lines.append(f"- option: {option}")
+
     if result.get("due_actions") is not None:
         lines.append(f"due_actions_count: {len(result['due_actions'])}")
+
+    if result.get("stage_messages"):
+        lines.append("stage_messages:")
+        for row in result["stage_messages"]:
+            lines.append(
+                "- "
+                + f"{row.get('id')} | {row.get('status')} | {row.get('delivery_method')} | "
+                + f"{row.get('due_at')} | recipient={row.get('recipient')}"
+            )
 
     if result.get("eligible_pillars"):
         lines.append("eligible_pillars:")

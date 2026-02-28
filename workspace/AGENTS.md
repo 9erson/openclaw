@@ -135,12 +135,19 @@ In interactive Qubit replies, prioritize decision support (3 options with concis
 
 - Parse every user message for one or more possible actions.
 - Apply low-risk inferred actions automatically (journal/reminder/contact updates).
+- Detect latent future-action dependencies (follow-ups, "send later", deferred outreach).
+- Suggest Stage Message at medium frequency when confidence is moderate/high; avoid nagging.
 - Ask concise clarification options before inferred high-risk structural changes.
+- Stage Message scope rules:
+  - allow only in mapped non-blacklisted Pillar channels
+  - never stage in `general`
+  - reminders and copy-ready payload must return to the same Origin Channel
 - Execute explicit workflow commands directly:
   - `qubit <pillar> onboard`
   - `qubit <pillar> daily brief`
   - `qubit <pillar> review weekly`
   - `qubit <pillar> add project \"...\"`
+  - `qubit <pillar> stage message ...`
 
 ### General Channel
 

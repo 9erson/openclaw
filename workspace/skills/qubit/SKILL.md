@@ -94,7 +94,7 @@ Write weekly review summary to journal and reset weekly rolling cadence timestam
 5. `ingest-message`
 Parse one Discord message into zero-to-many actions and apply policy.
 6. `due-scan`
-Scan active pillars for overdue reminders and due rolling loops.
+Scan active pillars for overdue reminders, staged messages, and due rolling loops.
 Skip loop prompts for pillars with incomplete onboarding or missing review tracking baseline.
 7. `mark-loop`
 Mark a loop run (`weekly|monthly|quarterly|yearly`) as completed.
@@ -105,6 +105,18 @@ Run global daily-brief integrity checks and auto-fixes (IST 04:00-04:59 spread, 
 Use `--check` for report-only mode.
 10. `sync-heartbeat`
 Write a single global heartbeat checklist in `workspace/HEARTBEAT.md`.
+11. `stage-message-create`
+Create a staged message with strict delivery schema (`email|whatsapp`) and due schedule.
+12. `stage-message-list`
+List staged messages for a pillar.
+13. `stage-message-edit`
+Edit staged message fields and reschedule as needed.
+14. `stage-message-cancel`
+Cancel a staged message and remove cron dispatch job.
+15. `stage-message-complete`
+Mark a staged message as completed and remove cron dispatch job.
+16. `stage-message-dispatch`
+Dispatch the due staged message into its Origin Channel as a copy-ready block.
 
 ## Explicit Command Grammar
 
@@ -116,6 +128,8 @@ Support and prioritize these forms:
 4. `qubit <pillar> add project "<title>"`
 5. `qubit heal`
 6. `qubit heal check`
+7. `qubit <pillar> stage message dispatch <stage-id>`
+8. `qubit <pillar> scheduled draft|deferred send|send intent|queue message|send later|stage send`
 
 ## Pillar Status and Automation Behavior
 
@@ -128,6 +142,8 @@ Support and prioritize these forms:
 7. During onboarding, process one strategic question per turn and save draft manifesto updates each turn.
 8. Daily brief health policy lives in `workspace/qubit/meta/health-policy.json`.
 9. Blacklisted channel names (normalized slug match, for example `general`) must not have daily brief cron jobs.
+10. Stage Message is pillar-only and blocked in blacklisted channels (for example `general`).
+11. Stage Message reminders must return to the same Origin Channel.
 
 ## Meta Loop Rules
 

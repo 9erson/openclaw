@@ -8,6 +8,7 @@
 4. Apply low-risk inferred actions automatically.
 5. Require concise clarification choices for inferred high-risk actions.
 6. Treat explicit workflow commands as execution authorization.
+7. Detect latent follow-up intent and suggest Stage Message with cooldown-based throttling.
 
 ## Response Guidance Source
 
@@ -79,10 +80,23 @@ Rules:
 1. Keep a single global heartbeat checklist in `workspace/HEARTBEAT.md`.
 2. Scan active pillars for:
    - overdue reminders
+   - due staged messages
    - due loop prompts
 3. Skip paused and retired pillars.
 4. Skip loop prompts when onboarding is not completed.
 5. Respect pillar-specific quiet hours for non-urgent items.
+
+## Stage Message Model
+
+1. Stage Message is pillar-scoped and origin-channel-scoped.
+2. Allowed delivery methods in v1: `email`, `whatsapp`.
+3. Enforce strict recipient schema per delivery method.
+4. Use one-shot cron jobs for exact-time dispatch with fallback catch-up via heartbeat `due-scan`.
+5. Dispatch exactly once per staged record (`status: scheduled -> notified`) unless manually restaged.
+6. Due reminder output is one copy-ready block in the same Origin Channel.
+7. Basic conditional follow-up is supported:
+   `condition.kind = parent_uncompleted_after_days`.
+8. If conditional parent is completed, child stage dispatch is canceled.
 
 ## Onboarding Conversation Model
 
@@ -98,10 +112,11 @@ Rules:
 
 1. Store jobs in `cron/jobs.json`.
 2. Manage one daily brief job per pillar with stable id `qubit-daily-brief-<pillar-slug>`.
-3. Use idempotent upsert behavior.
-4. Require channel binding (`discord_channel_id`) before creating job.
-5. `sync-cron` must respect blacklist policy and clean prohibited jobs instead of recreating them.
-6. Run a dedicated nightly heal job (`qubit-heal-nightly`) at `03:00` Asia/Kolkata.
+3. Manage one-shot stage-message jobs with id `qubit-stage-message-<pillar-slug>-<stage-id>`.
+4. Use idempotent upsert behavior.
+5. Require channel binding (`discord_channel_id`) before creating jobs.
+6. `sync-cron` must respect blacklist policy and clean prohibited jobs instead of recreating them.
+7. Run a dedicated nightly heal job (`qubit-heal-nightly`) at `03:00` Asia/Kolkata.
 
 ## Meta Feedback Loop
 
