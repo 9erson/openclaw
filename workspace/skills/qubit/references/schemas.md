@@ -9,7 +9,8 @@
 5. Monthly Journal File Frontmatter
 6. Project File Frontmatter
 7. `reminders.jsonl` Object Schema
-8. Time Standard
+8. `health-policy.json` Schema
+9. Time Standard
 
 ## Pillar Filesystem Layout
 
@@ -168,6 +169,37 @@ Reminder status enum:
 1. `pending`
 2. `done`
 3. `canceled`
+
+## `health-policy.json` Schema
+
+Path:
+
+```text
+workspace/qubit/meta/health-policy.json
+```
+
+Object:
+
+```json
+{
+  "schema_version": 1,
+  "timezone": "Asia/Kolkata",
+  "daily_brief_window": {
+    "start": "04:00",
+    "end": "05:00"
+  },
+  "channel_blacklist": ["general"],
+  "checks": {
+    "daily_brief_integrity": true
+  }
+}
+```
+
+Rules:
+
+1. `daily_brief_window.start` inclusive and `daily_brief_window.end` exclusive.
+2. `channel_blacklist` is matched against normalized Discord channel name slugs.
+3. `checks.daily_brief_integrity=false` disables heal enforcement.
 
 ## Time Standard
 

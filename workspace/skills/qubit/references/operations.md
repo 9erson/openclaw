@@ -39,6 +39,19 @@ Autonomous mode (cron/heartbeat):
    - Top 3 Next Actions
    - One focused question
 
+## Heal
+
+1. Trigger via command (`heal`) or explicit chat command (`qubit heal` / `qubit heal check`).
+2. Default mode is auto-fix; `--check` is report-only.
+3. Health policy source: `workspace/qubit/meta/health-policy.json`.
+4. Enforce daily brief integrity:
+   - eligible pillars: `active` + onboarding completed + not blacklisted + channel bound
+   - force timezone to policy timezone (`Asia/Kolkata` by default)
+   - recompute evenly spread slots across the policy window (`04:00-05:00` end-exclusive by default)
+   - ensure one managed job per eligible pillar
+   - remove managed jobs for non-eligible pillars, duplicates, and blacklist violations
+5. Blacklist matching uses normalized Discord channel name slug (e.g. `#general` -> `general`).
+
 ## Weekly Review
 
 1. Manual command behavior: run now and reset weekly cadence checkpoint.
@@ -64,12 +77,13 @@ Rules:
 ## Heartbeat Model
 
 1. Keep a single global heartbeat checklist in `workspace/HEARTBEAT.md`.
-2. Scan active pillars for:
+2. Run `heal` first to auto-repair daily brief schedule drift.
+3. Scan active pillars for:
    - overdue reminders
    - due loop prompts
-3. Skip paused and retired pillars.
-4. Skip loop prompts when onboarding is not completed.
-5. Respect pillar-specific quiet hours for non-urgent items.
+4. Skip paused and retired pillars.
+5. Skip loop prompts when onboarding is not completed.
+6. Respect pillar-specific quiet hours for non-urgent items.
 
 ## Onboarding Conversation Model
 
@@ -87,6 +101,7 @@ Rules:
 2. Manage one daily brief job per pillar with stable id `qubit-daily-brief-<pillar-slug>`.
 3. Use idempotent upsert behavior.
 4. Require channel binding (`discord_channel_id`) before creating job.
+5. `sync-cron` must respect blacklist policy and clean prohibited jobs instead of recreating them.
 
 ## Meta Feedback Loop
 

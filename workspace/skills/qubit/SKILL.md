@@ -100,7 +100,10 @@ Skip loop prompts for pillars with incomplete onboarding or missing review track
 Mark a loop run (`weekly|monthly|quarterly|yearly`) as completed.
 8. `sync-cron`
 Idempotently upsert the pillar's daily brief cron entry in `cron/jobs.json`.
-9. `sync-heartbeat`
+9. `heal`
+Run global daily-brief integrity checks and auto-fixes (IST 04:00-04:59 spread, one managed job per eligible pillar, blacklist enforcement).
+Use `--check` for report-only mode.
+10. `sync-heartbeat`
 Write a single global heartbeat checklist in `workspace/HEARTBEAT.md`.
 
 ## Explicit Command Grammar
@@ -111,6 +114,8 @@ Support and prioritize these forms:
 2. `qubit <pillar> daily brief`
 3. `qubit <pillar> review weekly`
 4. `qubit <pillar> add project "<title>"`
+5. `qubit heal`
+6. `qubit heal check`
 
 ## Pillar Status and Automation Behavior
 
@@ -121,6 +126,8 @@ Support and prioritize these forms:
 5. Do not create daily brief cron until a valid Discord channel ID exists.
 6. Do not create daily brief cron until onboarding is completed.
 7. During onboarding, process one strategic question per turn and save draft manifesto updates each turn.
+8. Daily brief health policy lives in `workspace/qubit/meta/health-policy.json`.
+9. Blacklisted channel names (normalized slug match, for example `general`) must not have daily brief cron jobs.
 
 ## Meta Loop Rules
 

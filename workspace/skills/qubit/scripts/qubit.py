@@ -66,6 +66,20 @@ ONBOARDING_FOLLOWUPS = {
         "Need at least 2 concrete signs. How will you measure progress?"
     ),
 }
+HEALTH_POLICY_FILENAME = "health-policy.json"
+MANAGED_DAILY_BRIEF_DESCRIPTION_TAG = "managed-by=qubit;kind=daily-brief"
+HEALTH_POLICY_DEFAULT = {
+    "schema_version": 1,
+    "timezone": "Asia/Kolkata",
+    "daily_brief_window": {
+        "start": "04:00",
+        "end": "05:00",
+    },
+    "channel_blacklist": ["general"],
+    "checks": {
+        "daily_brief_integrity": True,
+    },
+}
 
 
 class QubitError(RuntimeError):
@@ -170,6 +184,136 @@ def pillars_root(workspace: Path) -> Path:
 
 def cron_store_path(workspace: Path) -> Path:
     return workspace.parent / "cron" / "jobs.json"
+
+
+def health_policy_path(workspace: Path) -> Path:
+    return workspace / "qubit" / "meta" / HEALTH_POLICY_FILENAME
+
+
+def default_health_policy() -> dict[str, Any]:
+    return {
+        "schema_version": int(HEALTH_POLICY_DEFAULT["schema_version"]),
+        "timezone": str(HEALTH_POLICY_DEFAULT["timezone"]),
+        "daily_brief_window": {
+            "start": str(HEALTH_POLICY_DEFAULT["daily_brief_window"]["start"]),
+            "end": str(HEALTH_POLICY_DEFAULT["daily_brief_window"]["end"]),
+        },
+        "channel_blacklist": list(HEALTH_POLICY_DEFAULT["channel_blacklist"]),
+        "checks": {
+            "daily_brief_integrity": bool(HEALTH_POLICY_DEFAULT["checks"]["daily_brief_integrity"]),
+        },
+    }
+
+
+def validate_timezone_name(value: str, field_name: str) -> str:
+    try:
+        ZoneInfo(value)
+    except Exception as error:
+        raise QubitError(f"{field_name} must be a valid IANA timezone, got {value!r}") from error
+    return value
+
+
+def hhmm_to_minutes(value: str, field_name: str) -> int:
+    validate_time_hhmm(value, field_name)
+    hour, minute = value.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def minutes_to_hhmm(total_minutes: int) -> str:
+    hour = total_minutes // 60
+    minute = total_minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_discord_channel_slug(value: Any) -> str:
+    text = normalize_text(value).lower().lstrip("#")
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    text = re.sub(r"-{2,}", "-", text)
+    return text
+
+
+def load_health_policy(workspace: Path) -> tuple[dict[str, Any], Path]:
+    path = health_policy_path(workspace)
+    default_policy = default_health_policy()
+    raw = load_json(path, default_policy)
+    if not isinstance(raw, dict):
+        raise QubitError(f"Invalid health policy format: {path}")
+
+    timezone = validate_timezone_name(
+        str(raw.get("timezone") or default_policy["timezone"]),
+        "health_policy.timezone",
+    )
+
+    raw_window = raw.get("daily_brief_window")
+    if not isinstance(raw_window, dict):
+        raw_window = default_policy["daily_brief_window"]
+    window_start = validate_time_hhmm(
+        str(raw_window.get("start") or default_policy["daily_brief_window"]["start"]),
+        "health_policy.daily_brief_window.start",
+    )
+    window_end = validate_time_hhmm(
+        str(raw_window.get("end") or default_policy["daily_brief_window"]["end"]),
+        "health_policy.daily_brief_window.end",
+    )
+    if hhmm_to_minutes(window_end, "health_policy.daily_brief_window.end") <= hhmm_to_minutes(
+        window_start,
+        "health_policy.daily_brief_window.start",
+    ):
+        raise QubitError("health_policy.daily_brief_window.end must be later than start")
+
+    raw_blacklist = raw.get("channel_blacklist")
+    if isinstance(raw_blacklist, list):
+        blacklist_values = raw_blacklist
+    else:
+        blacklist_values = default_policy["channel_blacklist"]
+    channel_blacklist = sorted(
+        {
+            slug
+            for slug in (normalize_discord_channel_slug(item) for item in blacklist_values)
+            if slug
+        }
+    )
+
+    raw_checks = raw.get("checks")
+    if not isinstance(raw_checks, dict):
+        raw_checks = default_policy["checks"]
+
+    policy = {
+        "schema_version": 1,
+        "timezone": timezone,
+        "daily_brief_window": {
+            "start": window_start,
+            "end": window_end,
+        },
+        "channel_blacklist": channel_blacklist,
+        "checks": {
+            "daily_brief_integrity": bool(raw_checks.get("daily_brief_integrity", True)),
+        },
+    }
+
+    if not path.exists() or raw != policy:
+        ensure_dir(path.parent)
+        save_json(path, policy)
+
+    return policy, path
+
+
+def daily_brief_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
+    window = policy.get("daily_brief_window") or {}
+    if not isinstance(window, dict):
+        raise QubitError("health_policy.daily_brief_window must be an object")
+    start = hhmm_to_minutes(str(window.get("start") or "04:00"), "health_policy.daily_brief_window.start")
+    end = hhmm_to_minutes(str(window.get("end") or "05:00"), "health_policy.daily_brief_window.end")
+    if end <= start:
+        raise QubitError("health_policy.daily_brief_window.end must be later than start")
+    return start, end
+
+
+def is_channel_blacklisted(meta: dict[str, Any], blacklist: set[str]) -> bool:
+    channel_slug = normalize_discord_channel_slug(meta.get("discord_channel_name"))
+    if not channel_slug:
+        return False
+    return channel_slug in blacklist
 
 
 def find_pillar_dir(workspace: Path, pillar_slug: str) -> tuple[Path, str] | tuple[None, None]:
@@ -572,6 +716,84 @@ def managed_job_id(pillar_slug: str) -> str:
     return f"qubit-daily-brief-{pillar_slug}"
 
 
+def managed_job_pillar_slug(job: dict[str, Any]) -> str | None:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-daily-brief-"):
+        slug = normalize_text(job_id.removeprefix("qubit-daily-brief-"))
+        return slug or None
+
+    description = normalize_text(job.get("description"))
+    if MANAGED_DAILY_BRIEF_DESCRIPTION_TAG not in description:
+        return None
+    match = re.search(r"(?:^|;)pillar=([a-z0-9-]+)(?:;|$)", description)
+    if match:
+        return match.group(1)
+    return None
+
+
+def is_managed_daily_brief_job(job: dict[str, Any]) -> bool:
+    return managed_job_pillar_slug(job) is not None
+
+
+def preserve_runtime_fields(existing: dict[str, Any], new_job: dict[str, Any]) -> dict[str, Any]:
+    preserved: dict[str, Any] = {}
+    for key in ("id", "runs", "lastRunAt", "nextRunAt", "nextWakeAtMs", "createdAt", "state"):
+        if key in existing:
+            preserved[key] = existing[key]
+
+    updated = dict(new_job)
+    updated.update(preserved)
+    return updated
+
+
+def remove_managed_daily_brief_jobs(cron_path: Path, pillar_slug: str | None = None) -> int:
+    data = load_cron_jobs(cron_path)
+    jobs = data["jobs"]
+    kept: list[dict[str, Any]] = []
+    removed = 0
+
+    for job in jobs:
+        managed_slug = managed_job_pillar_slug(job)
+        if not managed_slug:
+            kept.append(job)
+            continue
+        if pillar_slug is not None and managed_slug != pillar_slug:
+            kept.append(job)
+            continue
+        removed += 1
+
+    if removed:
+        data["jobs"] = kept
+        save_json(cron_path, data)
+
+    return removed
+
+
+def allocate_daily_brief_slots(
+    pillar_slugs: list[str],
+    start_minutes: int,
+    end_minutes: int,
+) -> dict[str, str]:
+    ordered = sorted(pillar_slugs)
+    if not ordered:
+        return {}
+
+    window_size = end_minutes - start_minutes
+    if window_size <= 0:
+        raise QubitError("Daily brief window must have positive length")
+    if len(ordered) > window_size:
+        raise QubitError(
+            f"Cannot allocate unique daily brief slots: {len(ordered)} pillars in a {window_size}-minute window"
+        )
+
+    assigned: dict[str, str] = {}
+    count = len(ordered)
+    for index, pillar_slug in enumerate(ordered):
+        offset = (index * window_size) // count
+        assigned[pillar_slug] = minutes_to_hhmm(start_minutes + offset)
+    return assigned
+
+
 def build_daily_brief_job(meta: dict[str, Any]) -> dict[str, Any]:
     pillar_slug = str(meta["pillar_slug"])
     display_name = str(meta.get("display_name", pillar_slug))
@@ -591,7 +813,7 @@ def build_daily_brief_job(meta: dict[str, Any]) -> dict[str, Any]:
     return {
         "jobId": managed_job_id(pillar_slug),
         "name": f"Qubit Daily Brief: {display_name}",
-        "description": f"managed-by=qubit;kind=daily-brief;pillar={pillar_slug}",
+        "description": f"{MANAGED_DAILY_BRIEF_DESCRIPTION_TAG};pillar={pillar_slug}",
         "enabled": True,
         "deleteAfterRun": False,
         "schedule": {
@@ -621,27 +843,27 @@ def upsert_daily_brief_job(cron_path: Path, meta: dict[str, Any]) -> tuple[str, 
     expected_id = managed_job_id(str(meta["pillar_slug"]))
     new_job = build_daily_brief_job(meta)
 
-    matched_index = None
+    matched_indices: list[int] = []
     for index, job in enumerate(jobs):
-        job_id = str(job.get("jobId") or job.get("id") or "")
+        managed_slug = managed_job_pillar_slug(job)
+        if managed_slug and managed_slug == str(meta["pillar_slug"]):
+            matched_indices.append(index)
+            continue
+        job_id = normalize_text(job.get("jobId") or job.get("id"))
         name = str(job.get("name") or "")
         desc = str(job.get("description") or "")
         if job_id == expected_id or desc.endswith(f"pillar={meta['pillar_slug']}") or name == new_job["name"]:
-            matched_index = index
-            break
+            matched_indices.append(index)
 
-    if matched_index is None:
+    if not matched_indices:
         jobs.append(new_job)
         action = "created"
     else:
-        existing = jobs[matched_index]
-        preserved = {}
-        for key in ("id", "runs", "lastRunAt", "nextRunAt", "nextWakeAtMs", "createdAt"):
-            if key in existing:
-                preserved[key] = existing[key]
-        updated = dict(new_job)
-        updated.update(preserved)
-        jobs[matched_index] = updated
+        primary_index = matched_indices[0]
+        existing = jobs[primary_index]
+        jobs[primary_index] = preserve_runtime_fields(existing, new_job)
+        for duplicate_index in sorted(matched_indices[1:], reverse=True):
+            del jobs[duplicate_index]
         action = "updated"
 
     data["jobs"] = jobs
@@ -1186,6 +1408,14 @@ def run_onboarding_turn(
 
 
 def parse_explicit_command(message: str) -> tuple[str, dict[str, Any]] | None:
+    global_patterns = [
+        ("heal-check", re.compile(r"^\s*qubit\s+heal\s+check\s*$", re.IGNORECASE)),
+        ("heal", re.compile(r"^\s*qubit\s+heal\s*$", re.IGNORECASE)),
+    ]
+    for workflow, pattern in global_patterns:
+        if pattern.match(message):
+            return workflow, {}
+
     patterns = [
         ("onboard", re.compile(r"^\s*qubit\s+(.+?)\s+onboard\s*$", re.IGNORECASE)),
         ("daily-brief", re.compile(r"^\s*qubit\s+(.+?)\s+daily\s+brief\s*$", re.IGNORECASE)),
@@ -1581,6 +1811,232 @@ def cmd_review_weekly(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).resolve()
+    mode = "check" if bool(args.check) else "apply"
+    check_only = mode == "check"
+
+    policy, policy_file = load_health_policy(workspace)
+    if not bool(policy.get("checks", {}).get("daily_brief_integrity", True)):
+        return {
+            "status": "ok",
+            "workflow": "heal",
+            "mode": mode,
+            "action": "skipped",
+            "reason": "daily_brief_integrity_disabled",
+            "policy_file": str(policy_file),
+        }
+
+    target_timezone = str(policy["timezone"])
+    window_start_minutes, window_end_minutes = daily_brief_window_bounds(policy)
+    blacklist = set(policy.get("channel_blacklist") or [])
+
+    pillar_records: list[dict[str, Any]] = []
+    for status in STATUSES:
+        status_root = pillars_root(workspace) / status
+        if not status_root.exists():
+            continue
+        for pillar_dir in sorted(path for path in status_root.iterdir() if path.is_dir()):
+            meta, body = load_pillar_meta(pillar_dir)
+            tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+            meta, body, _ = ensure_lifecycle_meta(
+                pillar_dir=pillar_dir,
+                meta=meta,
+                body=body,
+                tz_name=tz_name,
+                persist=False,
+            )
+
+            pillar_slug = str(meta.get("pillar_slug") or pillar_dir.name)
+            onboarding_completed = str(meta.get("onboarding_status") or "") == "completed"
+            has_channel_binding = bool(str(meta.get("discord_channel_id") or "").strip())
+            blacklisted = is_channel_blacklisted(meta, blacklist)
+            eligible = status == "active" and onboarding_completed and not blacklisted and has_channel_binding
+
+            pillar_records.append(
+                {
+                    "status": status,
+                    "pillar_dir": pillar_dir,
+                    "pillar_slug": pillar_slug,
+                    "meta": meta,
+                    "body": body,
+                    "onboarding_completed": onboarding_completed,
+                    "has_channel_binding": has_channel_binding,
+                    "blacklisted": blacklisted,
+                    "eligible": eligible,
+                }
+            )
+
+    eligible_slugs = [record["pillar_slug"] for record in pillar_records if bool(record["eligible"])]
+    assignments = allocate_daily_brief_slots(
+        eligible_slugs,
+        start_minutes=window_start_minutes,
+        end_minutes=window_end_minutes,
+    )
+    assignment_rows = [
+        {
+            "pillar_slug": pillar_slug,
+            "daily_brief_time": assignments[pillar_slug],
+            "timezone": target_timezone,
+        }
+        for pillar_slug in sorted(assignments)
+    ]
+
+    issues: list[str] = []
+    fixes: list[str] = []
+    updated_pillars: list[str] = []
+    pillar_by_slug = {record["pillar_slug"]: record for record in pillar_records}
+
+    for record in pillar_records:
+        pillar_slug = str(record["pillar_slug"])
+        meta = record["meta"]
+        body = record["body"]
+        changed = False
+
+        if record["eligible"]:
+            desired_time = assignments[pillar_slug]
+            current_timezone = str(meta.get("timezone") or "")
+            if current_timezone != target_timezone:
+                issues.append(
+                    f"Pillar '{pillar_slug}' timezone drift: expected {target_timezone}, got {current_timezone or 'unset'}"
+                )
+                if not check_only:
+                    meta["timezone"] = target_timezone
+                    changed = True
+                    fixes.append(f"Pillar '{pillar_slug}': set timezone to {target_timezone}")
+
+            current_daily_time = str(meta.get("daily_brief_time") or "")
+            if current_daily_time != desired_time:
+                issues.append(
+                    f"Pillar '{pillar_slug}' daily_brief_time drift: expected {desired_time}, got {current_daily_time or 'unset'}"
+                )
+                if not check_only:
+                    meta["daily_brief_time"] = desired_time
+                    changed = True
+                    fixes.append(f"Pillar '{pillar_slug}': set daily_brief_time to {desired_time}")
+
+            if meta.get("daily_brief_enabled") is not True:
+                issues.append(f"Pillar '{pillar_slug}' daily brief is disabled but should be enabled")
+                if not check_only:
+                    meta["daily_brief_enabled"] = True
+                    changed = True
+                    fixes.append(f"Pillar '{pillar_slug}': enabled daily brief")
+        else:
+            if record["blacklisted"] and meta.get("daily_brief_enabled") is not False:
+                issues.append(f"Pillar '{pillar_slug}' is blacklisted by channel name but daily brief is enabled")
+                if not check_only:
+                    meta["daily_brief_enabled"] = False
+                    changed = True
+                    fixes.append(f"Pillar '{pillar_slug}': disabled daily brief because channel is blacklisted")
+
+            if (
+                str(record["status"]) == "active"
+                and bool(record["onboarding_completed"])
+                and not bool(record["blacklisted"])
+                and not bool(record["has_channel_binding"])
+            ):
+                issues.append(
+                    f"Pillar '{pillar_slug}' is otherwise eligible but missing discord_channel_id; cannot schedule cron job"
+                )
+
+        if changed and not check_only:
+            stamp_tz = str(meta.get("timezone") or target_timezone or DEFAULT_TIMEZONE)
+            meta["updated_at"] = now_iso(stamp_tz)
+            write_pillar_meta(Path(record["pillar_dir"]), meta, body)
+            updated_pillars.append(pillar_slug)
+
+    cron_path = cron_store_path(workspace)
+    ensure_dir(cron_path.parent)
+    cron_data = load_cron_jobs(cron_path)
+    cron_jobs = cron_data["jobs"]
+
+    managed_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    unmanaged_jobs: list[dict[str, Any]] = []
+    for job in cron_jobs:
+        managed_slug = managed_job_pillar_slug(job)
+        if managed_slug:
+            managed_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        else:
+            unmanaged_jobs.append(job)
+
+    managed_before = sum(len(items) for items in managed_jobs_by_slug.values())
+    eligible_set = set(assignments)
+
+    for pillar_slug, grouped_jobs in sorted(managed_jobs_by_slug.items()):
+        if pillar_slug not in eligible_set:
+            issues.append(f"Cron has managed daily brief job for non-eligible pillar '{pillar_slug}'")
+        if len(grouped_jobs) > 1:
+            issues.append(f"Cron has duplicate managed daily brief jobs for pillar '{pillar_slug}'")
+
+    for pillar_slug in sorted(eligible_set):
+        if pillar_slug not in managed_jobs_by_slug:
+            issues.append(f"Cron is missing managed daily brief job for eligible pillar '{pillar_slug}'")
+
+    managed_after = managed_before
+    cron_created = 0
+    cron_updated = 0
+    cron_removed = 0
+    if not check_only:
+        rebuilt_managed_jobs: list[dict[str, Any]] = []
+        existing_kept = 0
+        for pillar_slug in sorted(eligible_set):
+            record = pillar_by_slug[pillar_slug]
+            desired_job = build_daily_brief_job(record["meta"])
+            existing_jobs = managed_jobs_by_slug.get(pillar_slug, [])
+            if existing_jobs:
+                existing_kept += 1
+                existing_primary = existing_jobs[0]
+                desired_job = preserve_runtime_fields(existing_primary, desired_job)
+                if existing_primary != desired_job:
+                    cron_updated += 1
+            else:
+                cron_created += 1
+            rebuilt_managed_jobs.append(desired_job)
+
+        managed_after = len(rebuilt_managed_jobs)
+        cron_removed = managed_before - existing_kept
+        rebuilt_jobs = unmanaged_jobs + rebuilt_managed_jobs
+        if rebuilt_jobs != cron_jobs:
+            cron_data["jobs"] = rebuilt_jobs
+            save_json(cron_path, cron_data)
+        else:
+            cron_created = 0
+            cron_updated = 0
+            cron_removed = 0
+
+        if cron_created:
+            fixes.append(f"Cron: created {cron_created} managed daily brief job(s)")
+        if cron_updated:
+            fixes.append(f"Cron: reconciled {cron_updated} managed daily brief job(s)")
+        if cron_removed:
+            fixes.append(f"Cron: removed {cron_removed} stale/duplicate managed daily brief job(s)")
+
+    action = "checked" if check_only else "applied"
+    return {
+        "status": "ok",
+        "workflow": "heal",
+        "mode": mode,
+        "action": action,
+        "policy_file": str(policy_file),
+        "cron_store": str(cron_path),
+        "checked_pillars": len(pillar_records),
+        "eligible_pillars": sorted(eligible_set),
+        "assignments": assignment_rows,
+        "updated_pillars": sorted(updated_pillars),
+        "issues": issues,
+        "fixes": fixes,
+        "metrics": {
+            "managed_jobs_before": managed_before,
+            "managed_jobs_after": managed_after,
+            "cron_jobs_created": cron_created,
+            "cron_jobs_updated": cron_updated,
+            "cron_jobs_removed": cron_removed,
+            "issue_count": len(issues),
+            "fix_count": len(fixes),
+        },
+    }
+
+
 def cmd_sync_cron(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     pillar_slug = slugify(args.pillar)
@@ -1593,6 +2049,34 @@ def cmd_sync_cron(args: argparse.Namespace) -> dict[str, Any]:
         tz_name=tz_name,
         persist=True,
     )
+    policy, policy_file = load_health_policy(workspace)
+    blacklist = set(policy.get("channel_blacklist") or [])
+
+    if is_channel_blacklisted(meta, blacklist):
+        cron_path = cron_store_path(workspace)
+        removed_jobs = 0
+        if cron_path.exists():
+            removed_jobs = remove_managed_daily_brief_jobs(cron_path, pillar_slug=pillar_slug)
+
+        metadata_updated = False
+        if meta.get("daily_brief_enabled") is not False:
+            meta["daily_brief_enabled"] = False
+            meta["updated_at"] = now_iso(str(meta.get("timezone") or DEFAULT_TIMEZONE))
+            write_pillar_meta(pillar_dir, meta, body)
+            metadata_updated = True
+
+        return {
+            "status": "ok",
+            "workflow": "sync-cron",
+            "pillar_dir": str(pillar_dir),
+            "cron_store": str(cron_path),
+            "policy_file": str(policy_file),
+            "action": "skipped",
+            "reason": "blacklisted_channel",
+            "removed_jobs": removed_jobs,
+            "lifecycle_updated": lifecycle_changed,
+            "metadata_updated": metadata_updated,
+        }
 
     if meta.get("onboarding_status") != "completed" or not bool(meta.get("daily_brief_enabled")):
         return {
@@ -1600,6 +2084,7 @@ def cmd_sync_cron(args: argparse.Namespace) -> dict[str, Any]:
             "workflow": "sync-cron",
             "pillar_dir": str(pillar_dir),
             "cron_store": str(cron_store_path(workspace)),
+            "policy_file": str(policy_file),
             "action": "skipped",
             "reason": "onboarding_incomplete",
             "lifecycle_updated": lifecycle_changed,
@@ -1617,6 +2102,7 @@ def cmd_sync_cron(args: argparse.Namespace) -> dict[str, Any]:
         "workflow": "sync-cron",
         "pillar_dir": str(pillar_dir),
         "cron_store": str(cron_path),
+        "policy_file": str(policy_file),
         "action": action,
         "jobId": job_id,
     }
@@ -1635,11 +2121,16 @@ def cmd_sync_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
         + str(script_path)
         + " --workspace "
         + str(workspace)
+        + " --json heal`\n"
+        "2. Run: `python3 "
+        + str(script_path)
+        + " --workspace "
+        + str(workspace)
         + " --json due-scan`\n"
-        "2. If no due actions, reply exactly: HEARTBEAT_OK\n"
-        "3. If due actions exist, execute due item(s) and post concise updates in the mapped Discord channels.\n"
-        "4. Loop prompts are only for pillars with completed onboarding and review tracking history.\n"
-        "5. For loop prompts, ask focused questions; for reminders, issue direct alerts.\n"
+        "3. If due-scan has no due actions, reply exactly: HEARTBEAT_OK\n"
+        "4. If due actions exist, execute due item(s) and post concise updates in the mapped Discord channels.\n"
+        "5. Loop prompts are only for pillars with completed onboarding and review tracking history.\n"
+        "6. For loop prompts, ask focused questions; for reminders, issue direct alerts.\n"
     )
 
     heartbeat_path.write_text(content, encoding="utf-8")
@@ -1760,7 +2251,26 @@ def cmd_ingest_message(args: argparse.Namespace) -> dict[str, Any]:
     explicit = parse_explicit_command(message)
     if explicit:
         workflow, payload = explicit
-        pillar_slug = slugify(payload["pillar"])
+
+        if workflow == "heal":
+            result = cmd_heal(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    check=False,
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
+
+        if workflow == "heal-check":
+            result = cmd_heal(
+                argparse.Namespace(
+                    workspace=str(workspace),
+                    check=True,
+                )
+            )
+            result["source"] = "explicit-command"
+            return result
 
         if workflow == "onboard":
             onboard_args = argparse.Namespace(
@@ -1949,6 +2459,10 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cron.add_argument("--pillar", required=True)
     sync_cron.set_defaults(func=cmd_sync_cron)
 
+    heal = subparsers.add_parser("heal", help="Audit and repair daily brief schedule integrity")
+    heal.add_argument("--check", action="store_true", help="Report issues without applying fixes")
+    heal.set_defaults(func=cmd_heal)
+
     sync_heartbeat = subparsers.add_parser("sync-heartbeat", help="Write global heartbeat checklist")
     sync_heartbeat.set_defaults(func=cmd_sync_heartbeat)
 
@@ -1996,7 +2510,9 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         "project_file",
         "journal_file",
         "heartbeat_file",
+        "policy_file",
         "cron_store",
+        "mode",
         "action",
         "jobId",
         "onboarding_status",
@@ -2004,6 +2520,7 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
         "captured_field",
         "completed",
         "reason",
+        "checked_pillars",
     ):
         if key in result and result[key] is not None:
             lines.append(f"{key}: {result[key]}")
@@ -2038,6 +2555,34 @@ def render_result(result: dict[str, Any], as_json: bool) -> str:
 
     if result.get("due_actions") is not None:
         lines.append(f"due_actions_count: {len(result['due_actions'])}")
+
+    if result.get("eligible_pillars"):
+        lines.append("eligible_pillars:")
+        for pillar_slug in result["eligible_pillars"]:
+            lines.append(f"- {pillar_slug}")
+
+    if result.get("assignments"):
+        lines.append("assignments:")
+        for row in result["assignments"]:
+            lines.append(f"- {row['pillar_slug']} @ {row['daily_brief_time']} ({row['timezone']})")
+
+    if result.get("updated_pillars"):
+        lines.append("updated_pillars:")
+        for pillar_slug in result["updated_pillars"]:
+            lines.append(f"- {pillar_slug}")
+
+    if result.get("issues"):
+        lines.append("issues:")
+        for item in result["issues"]:
+            lines.append(f"- {item}")
+
+    if result.get("fixes"):
+        lines.append("fixes:")
+        for item in result["fixes"]:
+            lines.append(f"- {item}")
+
+    if isinstance(result.get("metrics"), dict):
+        lines.append(f"metrics: {result['metrics']}")
 
     return "\n".join(lines)
 
