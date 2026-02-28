@@ -11,7 +11,8 @@
 7. `reminders.jsonl` Object Schema
 8. `staged-messages.jsonl` Object Schema
 9. `health-policy.json` Schema
-10. Time Standard
+10. `classical-questioning` State Schemas
+11. Time Standard
 
 ## Pillar Filesystem Layout
 
@@ -33,10 +34,11 @@ Required pillar contents:
 2. `manifesto.md`
 3. `reminders.jsonl`
 4. `staged-messages.jsonl`
-5. `contacts/`
-6. `journal/`
-7. `projects/`
-8. `archive/`
+5. `.classical-questioning.json` (session state sidecar)
+6. `contacts/`
+7. `journal/`
+8. `projects/`
+9. `archive/`
 
 Removed in v1:
 
@@ -74,7 +76,7 @@ updated_at: "2026-02-27T09:30:00+05:30"
 Onboarding lifecycle enums:
 
 1. `onboarding_status`: `in_progress` | `completed`
-2. `onboarding_step`: `mission` | `scope` | `success_signals` | `completed`
+2. `onboarding_step`: `mission` | `scope` | `non_negotiables` | `success_signals` | `completed`
 
 ## `manifesto.md` Frontmatter
 
@@ -149,6 +151,13 @@ next_decision: "..."
 next_action: "..."
 due_at: null
 tags: []
+definitions: []
+dependencies: []
+constraints: []
+success_metrics: []
+scope_boundaries: ""
+classical_questioning_status: in_progress
+classical_questioning_completed_at: null
 ```
 
 Status enum:
@@ -213,6 +222,75 @@ Enums and notes:
 3. `condition` optional v1 shape:
    `{"kind":"parent_uncompleted_after_days","parent_stage_id":"...","wait_days":3}`
 4. Reminders are always returned to `origin_channel_id` in the same pillar.
+
+## `classical-questioning` State Schemas
+
+Pillar sidecar path:
+
+```text
+workspace/pillars/<status>/<pillar-slug>/.classical-questioning.json
+```
+
+Project sidecar path:
+
+```text
+workspace/pillars/<status>/<pillar-slug>/projects/<project-slug>/.classical-questioning.json
+```
+
+Shape:
+
+```json
+{
+  "schema_version": 1,
+  "active_sessions": [
+    {
+      "session_id": "cq-abc123def456",
+      "name": "classical-questioning",
+      "context_type": "onboarding",
+      "status": "in_progress",
+      "pillar_slug": "personal",
+      "project_slug": null,
+      "question_count": 4,
+      "question_cap": 12,
+      "coverage": {"grammar": 2, "logic": 1, "rhetoric": 0, "total": 3},
+      "captured": {"mission": "..."},
+      "current_question": {"slot": "scope", "level": "grammar", "question": "..."},
+      "pending_terms": [],
+      "retry_counts": {"scope": 0},
+      "accepted_slots": ["mission"],
+      "created_at": "2026-02-27T09:30:00+05:30",
+      "updated_at": "2026-02-27T09:32:00+05:30"
+    }
+  ],
+  "archive": []
+}
+```
+
+Global index path:
+
+```text
+workspace/qubit/meta/classical-questioning-index.json
+```
+
+Shape:
+
+```json
+{
+  "schema_version": 1,
+  "active": [
+    {
+      "session_id": "cq-abc123def456",
+      "pillar_slug": "personal",
+      "context_type": "onboarding",
+      "status": "in_progress",
+      "project_slug": null,
+      "state_path": ".../.classical-questioning.json",
+      "updated_at": "2026-02-27T09:32:00+05:30"
+    }
+  ],
+  "history": []
+}
+```
 
 ## `health-policy.json` Schema
 

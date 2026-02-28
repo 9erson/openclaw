@@ -9,6 +9,7 @@
 5. Require concise clarification choices for inferred high-risk actions.
 6. Treat explicit workflow commands as execution authorization.
 7. Detect latent follow-up intent and suggest Stage Message with cooldown-based throttling.
+8. Run `classical-questioning` for onboarding and project setup as a hard-gated workflow.
 
 ## Response Guidance Source
 
@@ -103,10 +104,28 @@ Rules:
 1. For onboarding question format, follow `SKILL.md` `Response Guidance` mode `Onboarding Question`.
 2. `onboard` scaffolds structure and starts onboarding state (`in_progress`).
 3. While onboarding is `in_progress`, `ingest-message` treats user replies as onboarding answers.
-4. Ask one strategic question at a time in deterministic order: `mission -> scope -> success_signals`.
-5. Save draft manifesto updates incrementally on each accepted answer.
-6. Weak/placeholder answers must trigger a follow-up question for the same step.
-7. Mark onboarding `completed` only after mission, scope, and success signals are captured.
+4. Ask one strategic question at a time via `classical-questioning` with internal level bias `grammar -> logic -> rhetoric`.
+5. Coverage defaults: grammar >= 3, logic >= 2, total >= 5, rhetoric <= 1, cap = 12 questions.
+6. Immediate grammar interrupt: if user introduces an undefined term, ask to define it next turn.
+7. Weak/placeholder answers trigger follow-up; after 2 failed attempts switch to constrained choices.
+8. Mark onboarding `completed` only after mission, scope, non-negotiables, and success signals are captured.
+9. Persist draft state each turn in sidecar files and archive compact session state on completion/cancel.
+
+## Classical Questioning Model
+
+1. Canonical workflow name: `classical-questioning`.
+2. Context types: `onboarding`, `project`, `topic`.
+3. Session lifecycle: `in_progress`, `paused`, `completed`, `canceled`.
+4. Sidecar state files:
+   - pillar-scoped (`onboarding`/`topic`): `workspace/pillars/<status>/<pillar-slug>/.classical-questioning.json`
+   - project-scoped: `workspace/pillars/<status>/<pillar-slug>/projects/<project-slug>/.classical-questioning.json`
+5. Global index: `workspace/qubit/meta/classical-questioning-index.json`.
+6. One active session per context type per pillar.
+7. Onboarding locks the pillar: no project/topic session can start while onboarding is active.
+8. Project setup is hard-gated: `add-project` scaffolds first, then blocks completion until session requirements are met.
+9. Standalone topic mode is allowed and writes completion summary to the monthly journal.
+10. Natural-language trigger support: detect “apply/run/use/start classical questioning ...”; default target is contextual topic.
+11. Explicit controls: status/resume/cancel/answer.
 
 ## Cron Model
 

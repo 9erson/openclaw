@@ -55,6 +55,14 @@ Use this during onboarding turns.
 5. ONE casual emoji maximum, placed at the end, is optional.
 6. The question from the script is the complete message; do not add text before or after.
 
+### Mode 5: Classical Question
+
+Use this for `classical-questioning` turns outside onboarding (`project` or `topic`).
+
+1. Ask exactly one question per turn.
+2. Use a short context lead-in plus the question (do not expose internal level labels).
+3. Keep wording concrete and brief.
+
 ### Conversational Guardrail
 
 In interactive mode, ask one question per turn and avoid batching multiple questions in one message.
@@ -86,7 +94,7 @@ Primary subcommands:
 Create or repair the pillar structure, seed manifesto/journal files, and start conversational onboarding.
 Do not enable daily brief cron until onboarding is completed.
 2. `add-project`
-Create or update `/projects/<project-slug>/project.md`.
+Create or update `/projects/<project-slug>/project.md` and auto-start hard-gated classical questioning for project setup.
 3. `daily-brief`
 Generate an immediate Decision+Action brief. Do not alter schedule.
 4. `review-weekly`
@@ -117,6 +125,8 @@ Cancel a staged message and remove cron dispatch job.
 Mark a staged message as completed and remove cron dispatch job.
 16. `stage-message-dispatch`
 Dispatch the due staged message into its Origin Channel as a copy-ready block.
+17. `classical-questioning`
+Manage classical-questioning sessions (`start|status|resume|cancel|answer`) for `onboarding|project|topic`.
 
 ## Explicit Command Grammar
 
@@ -130,6 +140,11 @@ Support and prioritize these forms:
 6. `qubit heal check`
 7. `qubit <pillar> stage message dispatch <stage-id>`
 8. `qubit <pillar> scheduled draft|deferred send|send intent|queue message|send later|stage send`
+9. `qubit <pillar> classical questioning onboarding`
+10. `qubit <pillar> classical questioning project "<title>"`
+11. `qubit <pillar> classical questioning topic "<topic>"`
+12. `qubit <pillar> classical questioning status|resume|cancel`
+13. `qubit <pillar> classical questioning answer "<text>"`
 
 ## Pillar Status and Automation Behavior
 
@@ -140,10 +155,13 @@ Support and prioritize these forms:
 5. Do not create daily brief cron until a valid Discord channel ID exists.
 6. Do not create daily brief cron until onboarding is completed.
 7. During onboarding, process one strategic question per turn and save draft manifesto updates each turn.
-8. Daily brief health policy lives in `workspace/qubit/meta/health-policy.json`.
-9. Blacklisted channel names (normalized slug match, for example `general`) must not have daily brief cron jobs.
-10. Stage Message is pillar-only and blocked in blacklisted channels (for example `general`).
-11. Stage Message reminders must return to the same Origin Channel.
+8. Onboarding and project setup both use hard-gated `classical-questioning` until required coverage is complete.
+9. `classical-questioning` levels are internal (`grammar -> logic -> rhetoric` bias); do not expose labels in normal user-facing replies.
+10. Persist draft classical-questioning state every turn in `.classical-questioning.json` sidecar files.
+11. Daily brief health policy lives in `workspace/qubit/meta/health-policy.json`.
+12. Blacklisted channel names (normalized slug match, for example `general`) must not have daily brief cron jobs.
+13. Stage Message is pillar-only and blocked in blacklisted channels (for example `general`).
+14. Stage Message reminders must return to the same Origin Channel.
 
 ## Meta Loop Rules
 
