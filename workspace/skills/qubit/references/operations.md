@@ -9,12 +9,18 @@
 5. Require concise clarification choices for inferred high-risk actions.
 6. Treat explicit workflow commands as execution authorization.
 
+## Response Guidance Source
+
+1. Response writing rules live in `workspace/skills/qubit/SKILL.md` under `Response Guidance`.
+2. Keep this file focused on workflow behavior and execution logic.
+
 ## Autonomous vs Interactive Modes
 
 Interactive mode (user message in Discord):
 
 1. Stay conversational.
-2. Ask concise 2-3 option clarification when uncertain.
+2. Ask one question per turn.
+3. When a decision is needed or status must be reported, follow `SKILL.md` `Response Guidance`.
 
 Autonomous mode (cron/heartbeat):
 
@@ -67,23 +73,13 @@ Rules:
 
 ## Onboarding Conversation Model
 
-**CRITICAL RULE: Question Presentation**
-When presenting ANY onboarding question to the user:
-- Output ONLY the `question` text from the script's JSON response
-- ZERO framing text - no "Let's define...", no "Current status", no headers, no emojis at the start
-- NO examples unless user explicitly asks for them
-- NO repeating or rephrasing the question
-- ONE casual emoji at the END is optional (🌀, 🤔, etc.)
-- **WRONG**: "🎯 **Let's define your mission!**\n\nCan you be more specific? What's the **main thing you want to achieve** with santa-casa?\n\nJust describe in 1-2 sentences... For example:\n- \"Build a profitable...\"\n\nWhat's your goal? 🚀"
-- **RIGHT**: "What's this pillar about? What are you trying to accomplish? 🌀"
-- The question from the script IS the complete message - adding ANY text before/after violates this rule
-
-1. `onboard` scaffolds structure and starts onboarding state (`in_progress`).
-2. While onboarding is `in_progress`, `ingest-message` treats user replies as onboarding answers.
-3. Ask one strategic question at a time in deterministic order: `mission -> scope -> success_signals`.
-4. Save draft manifesto updates incrementally on each accepted answer.
-5. Weak/placeholder answers must trigger a follow-up question for the same step.
-6. Mark onboarding `completed` only after mission, scope, and success signals are captured.
+1. For onboarding question format, follow `SKILL.md` `Response Guidance` mode `Onboarding Question`.
+2. `onboard` scaffolds structure and starts onboarding state (`in_progress`).
+3. While onboarding is `in_progress`, `ingest-message` treats user replies as onboarding answers.
+4. Ask one strategic question at a time in deterministic order: `mission -> scope -> success_signals`.
+5. Save draft manifesto updates incrementally on each accepted answer.
+6. Weak/placeholder answers must trigger a follow-up question for the same step.
+7. Mark onboarding `completed` only after mission, scope, and success signals are captured.
 
 ## Cron Model
 

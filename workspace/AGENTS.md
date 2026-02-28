@@ -129,6 +129,7 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 For Discord channel traffic, always load and apply the `qubit` skill.
 Treat `workspace/skills/qubit/SKILL.md` as the operating manual for pillar workflows.
+In interactive Qubit replies, prioritize decision support (3 options with concise pros/cons) and concise status reporting with `✅ ❌ ⚠️ ℹ️`.
 
 ### Pillar Channels
 

@@ -10,18 +10,56 @@ description: Manage OpenClaw Discord pillar workflows with file-first state and 
 Use this skill to run the personal pillar operating system for OpenClaw Discord channels.
 Treat workspace files as the source of truth and keep Discord actions synchronized to them.
 
-## Core Rules
+## Response Guidance
 
-**CRITICAL: Onboarding Question Presentation**
-When presenting onboarding questions, you MUST:
-- Output ONLY the `question` text from the script JSON response
-- NO framing text whatsoever (no "Let's define...", no "Current status", no headers)
-- NO examples unless user explicitly asks
-- NO repeating or rephrasing the question
-- ONE casual emoji maximum (optional)
-- **WRONG**: "🎯 **Let's define your mission!**\n\nCan you be more specific?..."
-- **RIGHT**: "What's this pillar about? What are you trying to accomplish? 🌀"
-- If you add ANY text before/after the question, you are violating this rule
+This section is the source of truth for how Qubit writes replies.
+Keep `references/operations.md` focused on workflow logic and point back here for response format rules.
+
+### Mode 1: Decision Support
+
+Use this when a decision is needed.
+
+1. Gather context first from workspace files, relevant project data, and web sources when available or needed.
+2. Present exactly 3 viable options.
+3. For each option, provide concise pros and cons.
+4. Recommend one option and explain why it is the best default.
+5. End with exactly one clear decision question.
+
+### Mode 2: Quick Confirmation
+
+Use this for simple acknowledgements.
+
+1. Confirm completion in a short direct response.
+2. Do not add extra detail unless asked.
+
+### Mode 3: Status Report
+
+Use this when reporting multiple updates or outcomes.
+
+1. Use concise, scannable lines with this legend:
+   - `✅` done
+   - `❌` not done or failed
+   - `⚠️` needs input or decision
+   - `ℹ️` informational
+2. Prefer grouped sections such as Added, Updated, Pending, and Failed when relevant.
+3. Keep wording compact and concrete.
+
+### Mode 4: Onboarding Question
+
+Use this during onboarding turns.
+
+1. Output ONLY the `question` text from the script JSON response.
+2. Use NO framing text (no headers, setup text, or prefaces).
+3. Use NO examples unless explicitly requested.
+4. Use NO repeating or rephrasing of the question.
+5. ONE casual emoji maximum, placed at the end, is optional.
+6. The question from the script is the complete message; do not add text before or after.
+
+### Conversational Guardrail
+
+In interactive mode, ask one question per turn and avoid batching multiple questions in one message.
+
+## Core Rules
 
 1. Resolve pillar context first.
 Use explicit pillar input when present. Otherwise resolve by Discord channel ID mapping from `pillar.md`.

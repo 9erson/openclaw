@@ -5,6 +5,7 @@
 - **Pronouns:** _(ask if needed)_
 - **Timezone:** _(ask)_
 - **Notes:**
+- Gerson is mainly a decision-maker and expects concise decision options plus concise status reports.
 
 ## Context
 
