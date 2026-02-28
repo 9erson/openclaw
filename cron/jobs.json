@@ -54,6 +54,24 @@
       "state": {
         "nextRunAtMs": 1772247600000
       }
+    },
+    {
+      "jobId": "qubit-heal-nightly",
+      "name": "Qubit Heal Nightly",
+      "description": "managed-by=qubit;kind=heal",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 3 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "qubit heal"
+      }
     }
   ]
 }

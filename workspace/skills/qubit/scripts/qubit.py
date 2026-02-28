@@ -2121,16 +2121,10 @@ def cmd_sync_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
         + str(script_path)
         + " --workspace "
         + str(workspace)
-        + " --json heal`\n"
-        "2. Run: `python3 "
-        + str(script_path)
-        + " --workspace "
-        + str(workspace)
         + " --json due-scan`\n"
-        "3. If due-scan has no due actions, reply exactly: HEARTBEAT_OK\n"
-        "4. If due actions exist, execute due item(s) and post concise updates in the mapped Discord channels.\n"
-        "5. Loop prompts are only for pillars with completed onboarding and review tracking history.\n"
-        "6. For loop prompts, ask focused questions; for reminders, issue direct alerts.\n"
+        "2. If due-scan has no due actions, reply exactly: HEARTBEAT_OK\n"
+        "3. If due actions exist, execute due item(s) and post concise updates in the mapped Discord channels.\n"
+        "4. Loop prompts are only for pillars with completed onboarding and review tracking history.\n"
     )
 
     heartbeat_path.write_text(content, encoding="utf-8")

@@ -77,13 +77,12 @@ Rules:
 ## Heartbeat Model
 
 1. Keep a single global heartbeat checklist in `workspace/HEARTBEAT.md`.
-2. Run `heal` first to auto-repair daily brief schedule drift.
-3. Scan active pillars for:
+2. Scan active pillars for:
    - overdue reminders
    - due loop prompts
-4. Skip paused and retired pillars.
-5. Skip loop prompts when onboarding is not completed.
-6. Respect pillar-specific quiet hours for non-urgent items.
+3. Skip paused and retired pillars.
+4. Skip loop prompts when onboarding is not completed.
+5. Respect pillar-specific quiet hours for non-urgent items.
 
 ## Onboarding Conversation Model
 
@@ -102,6 +101,7 @@ Rules:
 3. Use idempotent upsert behavior.
 4. Require channel binding (`discord_channel_id`) before creating job.
 5. `sync-cron` must respect blacklist policy and clean prohibited jobs instead of recreating them.
+6. Run a dedicated nightly heal job (`qubit-heal-nightly`) at `03:00` Asia/Kolkata.
 
 ## Meta Feedback Loop
 
