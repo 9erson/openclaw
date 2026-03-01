@@ -20,18 +20,72 @@
       },
       "state": {
         "nextRunAtMs": 1772400600000,
-        "lastRunAtMs": 1772334000012,
-        "lastRunStatus": "ok",
-        "lastStatus": "ok",
-        "lastDurationMs": 39997,
-        "lastDeliveryStatus": "delivered",
-        "consecutiveErrors": 0,
-        "lastDelivered": true
+        "lastRunAtMs": 1772378520013,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 42900,
+        "lastDeliveryStatus": "unknown",
+        "consecutiveErrors": 1,
+        "lastError": "cron announce delivery failed"
       },
       "delivery": {
         "mode": "announce"
       },
-      "updatedAtMs": 1772334040009
+      "updatedAtMs": 1772378562913
+    },
+    {
+      "jobId": "qubit-daily-brief-knights-of-st-joseph",
+      "name": "Qubit Daily Brief: knights-of-st-joseph",
+      "description": "managed-by=qubit;kind=daily-brief;pillar=knights-of-st-joseph",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 4 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'knights-of-st-joseph' (slug: knights-of-st-joseph). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1476981651098570793",
+        "bestEffort": true
+      },
+      "state": {
+        "nextRunAtMs": 1772404200000
+      }
+    },
+    {
+      "jobId": "qubit-daily-brief-santa-casa",
+      "name": "Qubit Daily Brief: santa-casa",
+      "description": "managed-by=qubit;kind=daily-brief;pillar=santa-casa",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 4 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'santa-casa' (slug: santa-casa). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1476842188699865250",
+        "bestEffort": true
+      },
+      "state": {
+        "nextRunAtMs": 1772406000000
+      }
     },
     {
       "jobId": "qubit-nightly-report-knights-of-st-joseph",
@@ -148,6 +202,31 @@
       },
       "state": {
         "nextRunAtMs": 1772400600000
+      },
+      "delivery": {
+        "mode": "announce"
+      }
+    },
+    {
+      "jobId": "qubit-queue-dispatch",
+      "name": "Qubit Queue Dispatch",
+      "description": "managed-by=qubit;kind=queue-dispatch",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "* * * * *",
+        "tz": "UTC"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): Dispatch due queue items to Discord. Run: qubit queue-message-dispatch --limit 10"
+      },
+      "state": {
+        "nextRunAtMs": 1772378520000,
+        "runningAtMs": 1772378520011
       },
       "delivery": {
         "mode": "announce"
