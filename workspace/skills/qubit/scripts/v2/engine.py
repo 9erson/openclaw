@@ -90,11 +90,13 @@ CQ_INDEX_FILENAME = "classical-questioning-index.json"
 CQ_TOPIC_DEFAULT_PROMPT = "Clarify this topic and turn it into an actionable direction."
 CQ_RESPONSE_MODE_QUESTION_ONLY = "question_only"
 CQ_TRIGGER_PATTERN = re.compile(r"\bclassic(?:al)?\s+questioning\b", re.IGNORECASE)
-CQ_RHETORIC_CUE_PATTERN = re.compile(
+# NOTE: Pattern-based questioning DEPRECATED - now using LLM-driven approach
+# These patterns are kept for reference but NOT used in new system
+CQ_RHETORIC_CUE_PATTERN_DEPRECATED = re.compile(
     r"\b(influence|persuade|convince|pitch|narrative|story|message|creative|expression|frame)\b",
     re.IGNORECASE,
 )
-CQ_TERM_HINT_PATTERN = re.compile(
+CQ_TERM_HINT_PATTERN_DEPRECATED = re.compile(
     r"(?:`([^`]{2,40})`|\"([^\"]{2,40})\"|'([^']{2,40})')"
 )
 # === MESSAGE QUEUE (Phase 1) ===
@@ -1827,11 +1829,12 @@ def cq_apply_answer_to_session(
     session: dict[str, Any],
     answer: str,
 ) -> tuple[bool, Any, str, str]:
+    """Process user answer and update session state (LLM-driven version)."""
     question = session.get("current_question") or {}
     slot = normalize_text(question.get("slot")) or "mission"
     level = normalize_text(question.get("level")) or CQ_SLOT_LEVEL.get(slot, "grammar")
-    accepted, parsed = cq_validate_answer(normalize_text(session.get("context_type")), slot, answer)
-
+    
+    # Add to history
     history = session.get("qa_history") or []
     if not isinstance(history, list):
         history = []
@@ -1841,56 +1844,170 @@ def cq_apply_answer_to_session(
             "level": level,
             "question": normalize_text(question.get("question")),
             "answer": normalize_text(answer),
-            "accepted": bool(accepted),
+            "accepted": True,  # LLM decides acceptance
             "at": now_iso(str(session.get("timezone") or DEFAULT_TIMEZONE)),
         }
     )
     session["qa_history"] = history[-120:]
-
+    
+    # Simple validation: just check if answer is non-empty
+    accepted = bool(normalize_text(answer))
+    parsed = normalize_text(answer)
+    
     if not accepted:
         retries = session.get("retry_counts") or {}
         retries[slot] = int(retries.get(slot, 0)) + 1
         session["retry_counts"] = retries
         return False, parsed, slot, level
-
+    
+    # Reset retry count
     retries = session.get("retry_counts") or {}
     retries[slot] = 0
     session["retry_counts"] = retries
-
+    
+    # Update captured data
     captured = session.get("captured") or {}
-    if slot == "define_term":
-        term = normalize_text((question.get("extra") or {}).get("term"))
-        definitions = captured.get("definitions")
-        if not isinstance(definitions, list):
-            definitions = coerce_string_list(definitions)
-        definitions.append(f"{term}: {normalize_text(parsed)}")
-        captured["definitions"] = cq_merge_list([], definitions)
-        pending_terms = [item for item in (session.get("pending_terms") or []) if normalize_text(item).lower() != term.lower()]
-        session["pending_terms"] = pending_terms
-        slot = "definitions"
-    elif cq_is_list_slot(slot):
-        captured[slot] = cq_merge_list(captured.get(slot), parsed)
+    if cq_is_list_slot(slot):
+        captured[slot] = cq_merge_list(captured.get(slot), [parsed])
     else:
         captured[slot] = parsed
-
+    
     session["captured"] = captured
     accepted_slots = set(session.get("accepted_slots") or [])
     accepted_slots.add(slot)
     session["accepted_slots"] = sorted(accepted_slots)
-
-    terms = cq_extract_terms(answer)
-    known_terms = {normalize_text(item).split(":", 1)[0].lower() for item in coerce_string_list(captured.get("definitions")) if ":" in normalize_text(item)}
-    pending_terms = [normalize_text(item) for item in session.get("pending_terms") or [] if normalize_text(item)]
-    for term in terms:
-        key = term.lower()
-        if key in known_terms or key in {normalize_text(item).lower() for item in pending_terms}:
-            continue
-        if key in CQ_STOPWORDS:
-            continue
-        pending_terms.append(term)
-    session["pending_terms"] = pending_terms[:8]
-    session["rhetoric_signal"] = bool(session.get("rhetoric_signal")) or bool(CQ_RHETORIC_CUE_PATTERN.search(normalize_text(answer)))
+    
+    # NOTE: Term extraction removed - LLM handles this intelligently
+    # NOTE: Pattern matching removed - LLM decides followup questions
+    
     return True, parsed, slot, level
+
+
+def cq_prepare_next_question(
+    session: dict[str, Any],
+    *,
+    followup: bool = False,
+    force_slot: str | None = None,
+) -> None:
+    """Prepare next question for session (LLM-driven version)."""
+    # Increment question count
+    session["question_count"] = int(session.get("question_count", 0)) + 1
+    
+    # Calculate coverage from captured data
+    coverage = cq_compute_coverage(session)
+    session["coverage"] = coverage
+    
+    # Check if complete
+    if cq_is_complete(session):
+        session["status"] = "completed"
+        session["current_question"] = None
+        return
+    
+    # Check question cap
+    question_cap = int(session.get("question_cap") or CQ_QUESTION_CAP_DEFAULT)
+    if session["question_count"] >= question_cap:
+        session["status"] = "completed"
+        session["current_question"] = None
+        return
+    
+    # NOTE: Slot selection removed - LLM decides next question
+    # NOTE: Question rendering removed - LLM generates question
+    
+    # Set placeholder question (will be replaced by LLM response)
+    session["current_question"] = {
+        "slot": "llm_generated",
+        "level": "grammar",
+        "question": "LLM will generate the next question based on context.",
+        "extra": {},
+        "followup": False,
+        "constrained": False,
+    }
+    
+    session["updated_at"] = now_iso(str(session.get("timezone") or DEFAULT_TIMEZONE))
+
+
+def cq_build_llm_prompt(
+    session: dict[str, Any],
+    user_answer: str,
+    workspace: Path,
+) -> str:
+    """Build LLM prompt from session state and user answer."""
+    # Load prompt template
+    prompt_path = workspace / "skills" / "qubit" / "prompts" / "classical-questioning.md"
+    if not prompt_path.exists():
+        return ""
+    
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+    
+    # Build conversation history
+    history_lines = []
+    qa_history = session.get("qa_history") or []
+    for qa in qa_history[-10:]:  # Last 10 Q&A pairs
+        question = qa.get("question", "")
+        answer = qa.get("answer", "")
+        if question and answer:
+            history_lines.append(f"**Q:** {question}")
+            history_lines.append(f"**A:** {answer}")
+            history_lines.append("")
+    
+    conversation_history = "\n".join(history_lines) if history_lines else "No previous conversation."
+    
+    # Get coverage
+    coverage = session.get("coverage") or {}
+    coverage_percent = sum(coverage.values()) if isinstance(coverage, dict) else 0
+    
+    # Replace placeholders
+    prompt = prompt_template.replace("{{pillar_name}}", str(session.get("pillar_slug") or "Unknown"))
+    prompt = prompt.replace("{{context_type}}", str(session.get("context_type") or "onboarding"))
+    prompt = prompt.replace("{{current_step}}", str(session.get("current_question", {}).get("slot") or "mission"))
+    prompt = prompt.replace("{{question_count}}", str(session.get("question_count", 0)))
+    prompt = prompt.replace("{{question_cap}}", str(session.get("question_cap", CQ_QUESTION_CAP_DEFAULT)))
+    prompt = prompt.replace("{{coverage_percent}}", str(coverage_percent))
+    prompt = prompt.replace("{{conversation_history}}", conversation_history)
+    prompt = prompt.replace("{{user_answer}}", user_answer or "No answer provided yet.")
+    
+    return prompt
+
+
+def cq_apply_llm_response(
+    session: dict[str, Any],
+    llm_response: dict[str, Any],
+) -> None:
+    """Apply LLM response to session state."""
+    action = llm_response.get("action")
+    question = llm_response.get("question")
+    coverage_update = llm_response.get("coverage_update", {})
+    topic_progress = llm_response.get("topic_progress", {})
+    
+    # Update question
+    if question:
+        session["current_question"] = {
+            "slot": topic_progress.get("next", "mission"),
+            "level": "grammar",  # LLM decides level
+            "question": question,
+            "extra": {},
+            "followup": action == "ask_followup",
+            "constrained": False,
+        }
+    
+    # Update coverage
+    current_coverage = session.get("coverage") or {}
+    if isinstance(current_coverage, dict):
+        for level, increment in coverage_update.items():
+            if level in current_coverage:
+                current_coverage[level] = min(100, current_coverage[level] + increment)
+        session["coverage"] = current_coverage
+    
+    # Update topic progress
+    if topic_progress:
+        session["topic_progress"] = topic_progress
+    
+    # Check if complete
+    if action == "conclude":
+        session["status"] = "completed"
+        session["current_question"] = None
+    
+    session["updated_at"] = now_iso(str(session.get("timezone") or DEFAULT_TIMEZONE))
 
 
 def cq_finalize_onboarding(
