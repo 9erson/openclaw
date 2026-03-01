@@ -4235,62 +4235,78 @@ def harvest_channel_messages(
     """Harvest all messages from a Discord channel for a specific date."""
     import subprocess
     import json as json_module
-    
+
     pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
     channel_id = str(meta.get("discord_channel_id") or "")
-    
+
     if not channel_id:
         return []
-    
+
     tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
     tz = ZoneInfo(tz_name)
-    
+
     # Parse target date
     try:
         target_date = datetime.fromisoformat(date)
     except Exception:
         target_date = parse_iso(date)
-    
+
     target_date = target_date.replace(tzinfo=tz)
     start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = start_of_day + timedelta(days=1)
-    
+
     # Harvest messages using openclaw CLI
     messages = []
-    after_id = None
-    
+    before_id = None
+
     while len(messages) < limit:
         cmd = [
             "openclaw", "message", "read",
             "--channel", "discord",
             "--target", f"channel:{channel_id}",
-            "--limit", "100",
+            "--limit", "40",  # Safe limit to avoid JSON truncation (~57KB)
             "--json",
         ]
-        
-        if after_id:
-            cmd.extend(["--after", after_id])
-        
+
+        if before_id:
+            cmd.extend(["--before", before_id])
+
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            data = json_module.loads(result.stdout)
+
+            # Try to parse JSON
+            try:
+                data = json_module.loads(result.stdout)
+            except json_module.JSONDecodeError as e:
+                # JSON was truncated, stop harvesting
+                break
+
             batch = data.get("payload", {}).get("messages", [])
-            
+
             if not batch:
                 break
-            
+
             for msg in batch:
-                msg_time = datetime.fromisoformat(msg["timestampUtc"].replace("Z", "+00:00"))
-                msg_time_local = msg_time.astimezone(tz)
-                
-                if start_of_day <= msg_time_local < end_of_day:
-                    messages.append(msg)
-                elif msg_time_local < start_of_day:
-                    # We've gone past our target date
-                    return messages
-            
-            after_id = batch[-1]["id"]
-            
+                # Parse timestamp - it's already ISO format with timezone
+                timestamp_str = msg.get("timestamp") or msg.get("timestampUtc")
+                if not timestamp_str:
+                    continue
+
+                try:
+                    msg_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                    msg_time_local = msg_time.astimezone(tz)
+
+                    if start_of_day <= msg_time_local < end_of_day:
+                        messages.append(msg)
+                    elif msg_time_local < start_of_day:
+                        # We've gone past our target date
+                        return messages
+                except Exception as e:
+                    # Skip messages with invalid timestamps
+                    continue
+
+            before_id = batch[-1]["id"]
+
         except Exception as e:
             break
     
