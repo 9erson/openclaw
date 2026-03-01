@@ -5,26 +5,10 @@
     "start": "04:00",
     "end": "05:00"
   },
-  "nightly_audit_window": {
-    "start": "02:00",
-    "end": "03:00"
-  },
-  "nightly_report_window": {
-    "start": "00:00",
-    "end": "02:00"
-  },
-  "daily_brief_generate_window": {
-    "start": "04:00",
-    "end": "04:30"
-  },
   "channel_blacklist": [
     "general"
   ],
   "checks": {
-    "daily_brief_integrity": true,
-    "nightly_audit_integrity": true,
-    "nightly_report_integrity": true,
-    "daily_brief_generate_integrity": true,
-    "cleanup_integrity": true
+    "daily_brief_integrity": true
   }
 }
