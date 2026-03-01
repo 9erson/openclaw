@@ -34,7 +34,9 @@ DEFAULT_TIMEZONE = "Asia/Kolkata"
 DEFAULT_DAILY_BRIEF_TIME = "08:30"
 DEFAULT_QUIET_HOURS_START = "22:00"
 DEFAULT_QUIET_HOURS_END = "07:00"
-DEFAULT_NIGHTLY_AUDIT_TIME = "02:00"
+DEFAULT_NIGHTLY_REPORT_TIME = "00:30"  # Generate nightly reports 00:00-02:00 IST
+DEFAULT_DAILY_BRIEF_GENERATE_TIME = "04:15"  # Generate daily briefs 04:00-04:30 IST
+DEFAULT_CLEANUP_TIME = "03:00"  # Cleanup old reports at 3 AM IST
 ONBOARDING_STATUSES = ("in_progress", "completed")
 ONBOARDING_STEPS = ("mission", "scope", "non_negotiables", "success_signals", "completed")
 MANIFESTO_PLACEHOLDER_MISSION = "Define the enduring mission for this pillar."
@@ -269,6 +271,9 @@ ONBOARDING_FOLLOWUPS = {
 HEALTH_POLICY_FILENAME = "health-policy.json"
 MANAGED_DAILY_BRIEF_DESCRIPTION_TAG = "managed-by=qubit;kind=daily-brief"
 MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG = "managed-by=qubit;kind=nightly-audit"
+MANAGED_NIGHTLY_REPORT_DESCRIPTION_TAG = "managed-by=qubit;kind=nightly-report"
+MANAGED_DAILY_BRIEF_GENERATE_DESCRIPTION_TAG = "managed-by=qubit;kind=daily-brief-generate"
+MANAGED_CLEANUP_DESCRIPTION_TAG = "managed-by=qubit;kind=cleanup"
 MANAGED_STAGE_MESSAGE_DESCRIPTION_TAG = "managed-by=qubit;kind=stage-message"
 SUGGESTION_COOLDOWN_SECONDS = 4 * 60 * 60
 HEALTH_POLICY_DEFAULT = {
@@ -546,6 +551,30 @@ def nightly_audit_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
     end = hhmm_to_minutes(str(window.get("end") or "03:00"), "health_policy.nightly_audit_window.end")
     if end <= start:
         raise QubitError("health_policy.nightly_audit_window.end must be later than start")
+    return start, end
+
+
+def nightly_report_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
+    """Get nightly report generation window (default: 00:00-02:00 IST)."""
+    window = policy.get("nightly_report_window") or {}
+    if not isinstance(window, dict):
+        window = {}
+    start = hhmm_to_minutes(str(window.get("start") or "00:00"), "health_policy.nightly_report_window.start")
+    end = hhmm_to_minutes(str(window.get("end") or "02:00"), "health_policy.nightly_report_window.end")
+    if end <= start:
+        raise QubitError("health_policy.nightly_report_window.end must be later than start")
+    return start, end
+
+
+def daily_brief_generate_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
+    """Get daily brief generation window (default: 04:00-04:30 IST)."""
+    window = policy.get("daily_brief_generate_window") or {}
+    if not isinstance(window, dict):
+        window = {}
+    start = hhmm_to_minutes(str(window.get("start") or "04:00"), "health_policy.daily_brief_generate_window.start")
+    end = hhmm_to_minutes(str(window.get("end") or "04:30"), "health_policy.daily_brief_generate_window.end")
+    if end <= start:
+        raise QubitError("health_policy.daily_brief_generate_window.end must be later than start")
     return start, end
 
 
@@ -2186,6 +2215,151 @@ def allocate_nightly_audit_slots(
         offset = (index * window_size) // count
         assigned[pillar_slug] = minutes_to_hhmm(start_minutes + offset)
     return assigned
+
+
+# === NIGHTLY REPORT GENERATION JOBS ===
+
+def managed_nightly_report_job_id(pillar_slug: str) -> str:
+    return f"qubit-nightly-report-{pillar_slug}"
+
+
+def is_managed_nightly_report_job(job: dict[str, Any]) -> bool:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-nightly-report-"):
+        return True
+    description = normalize_text(job.get("description"))
+    return MANAGED_NIGHTLY_REPORT_DESCRIPTION_TAG in description
+
+
+def build_nightly_report_job(meta: dict[str, Any]) -> dict[str, Any]:
+    """Build a nightly report generation job (no Discord delivery)."""
+    pillar_slug = str(meta["pillar_slug"])
+    display_name = str(meta.get("display_name", pillar_slug))
+    tz_name = str(meta.get("timezone", DEFAULT_TIMEZONE))
+    report_time = str(meta.get("nightly_report_time", DEFAULT_NIGHTLY_REPORT_TIME))
+
+    # Parse time (HH:MM format)
+    hour, minute = report_time.split(":")
+    expr = f"{minute} {hour} * * *"  # cron: minute hour * * *
+
+    prompt = (
+        f"Autonomous workflow (cron): Generate nightly report for pillar '{display_name}' "
+        f"(slug: {pillar_slug}). Run: qubit {pillar_slug} generate-nightly-report --date yesterday"
+    )
+
+    return {
+        "jobId": managed_nightly_report_job_id(pillar_slug),
+        "name": f"Qubit Nightly Report: {display_name}",
+        "description": f"{MANAGED_NIGHTLY_REPORT_DESCRIPTION_TAG};pillar={pillar_slug}",
+        "enabled": True,
+        "deleteAfterRun": False,
+        "schedule": {
+            "kind": "cron",
+            "expr": expr,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        # NO delivery field - reports are sent by heartbeat
+    }
+
+
+# === DAILY BRIEF GENERATION JOBS ===
+
+def managed_daily_brief_generate_job_id(pillar_slug: str) -> str:
+    return f"qubit-daily-brief-generate-{pillar_slug}"
+
+
+def is_managed_daily_brief_generate_job(job: dict[str, Any]) -> bool:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-daily-brief-generate-"):
+        return True
+    description = normalize_text(job.get("description"))
+    return MANAGED_DAILY_BRIEF_GENERATE_DESCRIPTION_TAG in description
+
+
+def build_daily_brief_generate_job(meta: dict[str, Any]) -> dict[str, Any]:
+    """Build a daily brief generation job (no Discord delivery)."""
+    pillar_slug = str(meta["pillar_slug"])
+    display_name = str(meta.get("display_name", pillar_slug))
+    tz_name = str(meta.get("timezone", DEFAULT_TIMEZONE))
+    brief_time = str(meta.get("daily_brief_generate_time", DEFAULT_DAILY_BRIEF_GENERATE_TIME))
+
+    # Parse time (HH:MM format)
+    hour, minute = brief_time.split(":")
+    expr = f"{minute} {hour} * * *"  # cron: minute hour * * *
+
+    prompt = (
+        f"Autonomous workflow (cron): Generate daily brief for pillar '{display_name}' "
+        f"(slug: {pillar_slug}). Run: qubit {pillar_slug} generate-daily-brief --date today"
+    )
+
+    return {
+        "jobId": managed_daily_brief_generate_job_id(pillar_slug),
+        "name": f"Qubit Daily Brief Generate: {display_name}",
+        "description": f"{MANAGED_DAILY_BRIEF_GENERATE_DESCRIPTION_TAG};pillar={pillar_slug}",
+        "enabled": True,
+        "deleteAfterRun": False,
+        "schedule": {
+            "kind": "cron",
+            "expr": expr,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        # NO delivery field - briefs are sent by heartbeat
+    }
+
+
+# === CLEANUP JOB ===
+
+def managed_cleanup_job_id() -> str:
+    return "qubit-cleanup-reports"
+
+
+def is_managed_cleanup_job(job: dict[str, Any]) -> bool:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    return job_id == "qubit-cleanup-reports"
+
+
+def build_cleanup_job(tz_name: str = DEFAULT_TIMEZONE) -> dict[str, Any]:
+    """Build a cleanup job for old reports."""
+    cleanup_time = DEFAULT_CLEANUP_TIME
+    hour, minute = cleanup_time.split(":")
+    expr = f"{minute} {hour} * * *"  # cron: minute hour * * *
+
+    prompt = (
+        "Autonomous workflow (cron): Clean up old reports. "
+        "Run: qubit cleanup-reports --days 7"
+    )
+
+    return {
+        "jobId": managed_cleanup_job_id(),
+        "name": "Qubit Cleanup Old Reports",
+        "description": MANAGED_CLEANUP_DESCRIPTION_TAG,
+        "enabled": True,
+        "deleteAfterRun": False,
+        "schedule": {
+            "kind": "cron",
+            "expr": expr,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        # NO delivery - cleanup doesn't send messages
+    }
 
 
 def build_nightly_audit_job(meta: dict[str, Any]) -> dict[str, Any]:
