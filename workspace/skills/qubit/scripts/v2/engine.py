@@ -268,6 +268,7 @@ ONBOARDING_FOLLOWUPS = {
 }
 HEALTH_POLICY_FILENAME = "health-policy.json"
 MANAGED_DAILY_BRIEF_DESCRIPTION_TAG = "managed-by=qubit;kind=daily-brief"
+MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG = "managed-by=qubit;kind=nightly-audit"
 MANAGED_STAGE_MESSAGE_DESCRIPTION_TAG = "managed-by=qubit;kind=stage-message"
 SUGGESTION_COOLDOWN_SECONDS = 4 * 60 * 60
 HEALTH_POLICY_DEFAULT = {
@@ -534,6 +535,17 @@ def daily_brief_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
     end = hhmm_to_minutes(str(window.get("end") or "05:00"), "health_policy.daily_brief_window.end")
     if end <= start:
         raise QubitError("health_policy.daily_brief_window.end must be later than start")
+    return start, end
+
+
+def nightly_audit_window_bounds(policy: dict[str, Any]) -> tuple[int, int]:
+    window = policy.get("nightly_audit_window") or {}
+    if not isinstance(window, dict):
+        window = {}
+    start = hhmm_to_minutes(str(window.get("start") or "02:00"), "health_policy.nightly_audit_window.start")
+    end = hhmm_to_minutes(str(window.get("end") or "03:00"), "health_policy.nightly_audit_window.end")
+    if end <= start:
+        raise QubitError("health_policy.nightly_audit_window.end must be later than start")
     return start, end
 
 
@@ -2079,6 +2091,145 @@ def upsert_daily_brief_job(cron_path: Path, meta: dict[str, Any]) -> tuple[str, 
         name = str(job.get("name") or "")
         desc = str(job.get("description") or "")
         if job_id == expected_id or desc.endswith(f"pillar={meta['pillar_slug']}") or name == new_job["name"]:
+            matched_indices.append(index)
+
+    if not matched_indices:
+        jobs.append(new_job)
+        action = "created"
+    else:
+        primary_index = matched_indices[0]
+        existing = jobs[primary_index]
+        jobs[primary_index] = preserve_runtime_fields(existing, new_job)
+        for duplicate_index in sorted(matched_indices[1:], reverse=True):
+            del jobs[duplicate_index]
+        action = "updated"
+
+    data["jobs"] = jobs
+    save_json(cron_path, data)
+    return action, expected_id
+
+
+def managed_nightly_audit_job_id(pillar_slug: str) -> str:
+    return f"qubit-nightly-audit-{pillar_slug}"
+
+
+def is_managed_nightly_audit_job(job: dict[str, Any]) -> bool:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-nightly-audit-"):
+        return True
+    description = normalize_text(job.get("description"))
+    return MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG in description
+
+
+def remove_managed_nightly_audit_jobs(cron_path: Path, pillar_slug: str | None = None) -> int:
+    if not cron_path.exists():
+        return 0
+    data = load_cron_jobs(cron_path)
+    jobs = data["jobs"]
+    kept: list[dict[str, Any]] = []
+    removed = 0
+
+    for job in jobs:
+        if is_managed_nightly_audit_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if pillar_slug is None or managed_slug == pillar_slug:
+                removed += 1
+                continue
+        kept.append(job)
+
+    if removed:
+        data["jobs"] = kept
+        save_json(cron_path, data)
+    return removed
+
+
+def allocate_nightly_audit_slots(
+    pillar_slugs: list[str],
+    start_minutes: int,
+    end_minutes: int,
+) -> dict[str, str]:
+    """Allocate time slots for nightly audit jobs within the window."""
+    ordered = sorted(pillar_slugs)
+    if not ordered:
+        return {}
+
+    window_size = end_minutes - start_minutes
+    if window_size <= 0:
+        raise QubitError("Nightly audit window must have positive length")
+    if len(ordered) > window_size:
+        raise QubitError(
+            f"Cannot allocate unique nightly audit slots: {len(ordered)} pillars in a {window_size}-minute window"
+        )
+
+    assigned: dict[str, str] = {}
+    count = len(ordered)
+    for index, pillar_slug in enumerate(ordered):
+        offset = (index * window_size) // count
+        assigned[pillar_slug] = minutes_to_hhmm(start_minutes + offset)
+    return assigned
+
+
+def build_nightly_audit_job(meta: dict[str, Any]) -> dict[str, Any]:
+    pillar_slug = str(meta["pillar_slug"])
+    display_name = str(meta.get("display_name", pillar_slug))
+    tz_name = str(meta.get("timezone", DEFAULT_TIMEZONE))
+    audit_time = str(meta.get("nightly_audit_time", DEFAULT_NIGHTLY_AUDIT_TIME))
+    channel_id = str(meta.get("discord_channel_id", "")).strip()
+    if not channel_id:
+        raise QubitError("Cannot create nightly audit job without discord_channel_id")
+
+    # Parse time (HH:MM format)
+    hour, minute = audit_time.split(":")
+    expr = f"{minute} {hour} * * *"  # cron: minute hour * * *
+
+    prompt = (
+        f"Autonomous workflow (cron): run Qubit nightly audit for pillar '{display_name}' "
+        f"(slug: {pillar_slug}). Harvest yesterday's messages, analyze for events/decisions/reminders, "
+        f"detect gaps, update daily note, and post audit report."
+    )
+
+    return {
+        "jobId": managed_nightly_audit_job_id(pillar_slug),
+        "name": f"Qubit Nightly Audit: {display_name}",
+        "description": f"{MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG};pillar={pillar_slug}",
+        "enabled": True,
+        "deleteAfterRun": False,
+        "schedule": {
+            "kind": "cron",
+            "expr": expr,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        "delivery": {
+            "mode": "announce",
+            "channel": "discord",
+            "to": f"channel:{channel_id}",
+            "bestEffort": True,
+        },
+    }
+
+
+def upsert_nightly_audit_job(cron_path: Path, meta: dict[str, Any]) -> tuple[str, str]:
+    data = load_cron_jobs(cron_path)
+    jobs = data["jobs"]
+
+    expected_id = managed_nightly_audit_job_id(str(meta["pillar_slug"]))
+    new_job = build_nightly_audit_job(meta)
+
+    matched_indices: list[int] = []
+    for index, job in enumerate(jobs):
+        if is_managed_nightly_audit_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if managed_slug == str(meta["pillar_slug"]):
+                matched_indices.append(index)
+                continue
+        job_id = normalize_text(job.get("jobId") or job.get("id"))
+        if job_id == expected_id:
             matched_indices.append(index)
 
     if not matched_indices:
