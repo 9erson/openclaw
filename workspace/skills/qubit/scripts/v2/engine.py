@@ -98,7 +98,7 @@ CQ_TERM_HINT_PATTERN = re.compile(
     r"(?:`([^`]{2,40})`|\"([^\"]{2,40})\"|'([^']{2,40})')"
 )
 # === MESSAGE QUEUE (Phase 1) ===
-QUEUE_KINDS = ("reminder", "copy_ready_message")
+QUEUE_KINDS = ("reminder", "copy_ready_message", "report_delivery")
 QUEUE_STATUSES = ("queued", "sent", "failed", "canceled")
 QUEUE_DEFAULT_MAX_ATTEMPTS = 3
 QUEUE_RETRY_BACKOFF_MINUTES = [1, 2, 5]  # Exponential backoff: 1m, 2m, 5m
@@ -5427,9 +5427,7 @@ def send_report_to_discord(
     report_type: str,
     date: str,
 ) -> dict[str, Any]:
-    """Send a report to Discord with retry logic."""
-    import subprocess
-    import time
+    """Enqueue a report for Discord delivery (Phase 4: producer-only)."""
     
     pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
     channel_id = str(meta.get("discord_channel_id") or "")
@@ -5456,67 +5454,46 @@ def send_report_to_discord(
     
     report_text = "\n".join(lines[report_start:]).strip()
     
-    # Send to Discord with retry logic
-    max_attempts = 3
-    last_error = None
+    # Create queue item for immediate dispatch
+    now_utc = now_in_tz("UTC")
+    now_ist = now_in_tz("Asia/Kolkata")
     
-    for attempt in range(1, max_attempts + 1):
-        try:
-            cmd = [
-                "openclaw", "message", "send",
-                "--channel", "discord",
-                "--target", f"channel:{channel_id}",
-                "--message", report_text,
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            
-            # Success - update metadata
-            now_ts = now_iso(str(meta.get("timezone") or DEFAULT_TIMEZONE))
-            update_report_metadata_entry(
-                pillar_dir,
-                report_type,
-                date,
-                sent_at=now_ts,
-                attempts=attempt,
-            )
-            
-            return {
-                "status": "ok",
-                "action": "sent",
-                "pillar_slug": pillar_slug,
-                "report_type": report_type,
-                "date": date,
-                "channel_id": channel_id,
-                "attempts": attempt,
-            }
-            
-        except Exception as e:
-            last_error = str(e)
-            
-            # Update attempt count
-            update_report_metadata_entry(
-                pillar_dir,
-                report_type,
-                date,
-                attempts=attempt,
-                last_error=last_error,
-            )
-            
-            # Retry with exponential backoff (unless last attempt)
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)  # 2s, 4s, 8s
+    queue_item = create_queue_item(
+        kind="report_delivery",
+        pillar_slug=pillar_slug,
+        channel_id=channel_id,
+        due_at_ist=now_ist,
+        due_at_utc=now_utc,
+        payload={
+            "report_type": report_type,
+            "date": date,
+            "message": report_text,
+        },
+        max_attempts=3,
+    )
     
-    # All retries failed
+    # Add to queue
+    items = read_queue_items(workspace)
+    items.append(queue_item)
+    write_queue_items(workspace, items)
+    
+    # Update metadata to show queued
+    update_report_metadata_entry(
+        pillar_dir,
+        report_type,
+        date,
+        queued_at=now_iso(str(meta.get("timezone") or DEFAULT_TIMEZONE)),
+    )
+    
     return {
-        "status": "error",
-        "action": "failed",
+        "status": "ok",
+        "action": "queued",
         "pillar_slug": pillar_slug,
         "report_type": report_type,
         "date": date,
         "channel_id": channel_id,
-        "attempts": max_attempts,
-        "error": last_error,
+        "queue_item_id": queue_item["id"],
+        "message": f"Report queued for delivery (item {queue_item['id']})",
     }
 
 
