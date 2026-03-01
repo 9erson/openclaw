@@ -2561,6 +2561,54 @@ def build_cleanup_job(tz_name: str = DEFAULT_TIMEZONE) -> dict[str, Any]:
     }
 
 
+# === QUEUE DISPATCH JOB (Phase 2) ===
+MANAGED_QUEUE_DISPATCH_DESCRIPTION_TAG = "managed-by=qubit;kind=queue-dispatch"
+
+
+def managed_queue_dispatch_job_id() -> str:
+    """Job ID for the global queue dispatch job"""
+    return "qubit-queue-dispatch"
+
+
+def is_managed_queue_dispatch_job(job: dict[str, Any]) -> bool:
+    """Check if a job is the managed queue dispatch job"""
+    return (
+        job.get("jobId") == managed_queue_dispatch_job_id() or
+        job.get("description") == MANAGED_QUEUE_DISPATCH_DESCRIPTION_TAG
+    )
+
+
+def build_queue_dispatch_job() -> dict[str, Any]:
+    """Build a queue dispatch job (runs every minute in UTC)"""
+    expr = "* * * * *"  # Every minute
+    tz_name = "UTC"  # Always UTC for queue dispatch
+
+    prompt = (
+        "Autonomous workflow (cron): Dispatch due queue items to Discord. "
+        "Run: qubit queue-message-dispatch --limit 10"
+    )
+
+    return {
+        "jobId": managed_queue_dispatch_job_id(),
+        "name": "Qubit Queue Dispatch",
+        "description": MANAGED_QUEUE_DISPATCH_DESCRIPTION_TAG,
+        "enabled": True,
+        "deleteAfterRun": False,
+        "schedule": {
+            "kind": "cron",
+            "expr": expr,
+            "tz": tz_name,
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "next-heartbeat",
+        "payload": {
+            "kind": "agentTurn",
+            "message": prompt,
+        },
+        # NO delivery - dispatcher sends via message tool
+    }
+
+
 def build_nightly_audit_job(meta: dict[str, Any]) -> dict[str, Any]:
     pillar_slug = str(meta["pillar_slug"])
     display_name = str(meta.get("display_name", pillar_slug))
@@ -6518,6 +6566,286 @@ def cmd_queue_message_cancel(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_queue_message_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Dispatch due queue items (Phase 2)
+    - Picks due items (status=queued and due_at_utc <= now, or status=failed and next_retry_at_utc <= now)
+    - Sends directly via message tool
+    - Updates queue row atomically
+    - Handles retries with backoff (1m, 2m, 5m)
+    
+    Optional: --limit (default 10), --dry-run
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    # Get limit (default 10 items per run)
+    limit = args.limit if hasattr(args, 'limit') and args.limit else 10
+    if limit < 1 or limit > 100:
+        raise QubitError("limit must be between 1 and 100")
+    
+    # Dry run mode
+    dry_run = bool(args.dry_run) if hasattr(args, 'dry_run') else False
+    
+    # Read all queue items
+    items = read_queue_items(workspace)
+    
+    # Current time in UTC
+    now_utc = now_in_tz("UTC")
+    now_utc_str = now_utc.strftime("%Y-%m-%d %H:%M")
+    
+    # Find due items
+    due_items = []
+    for item in items:
+        status = item.get("status")
+        
+        # Skip terminal statuses
+        if status in ("sent", "canceled"):
+            continue
+        
+        # Check if due
+        if status == "queued":
+            # Check if due_at_utc <= now
+            due_at_utc_str = item.get("due_at_utc")
+            if due_at_utc_str:
+                try:
+                    due_at_utc = datetime.strptime(due_at_utc_str, "%Y-%m-%d %H:%M")
+                    due_at_utc = due_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if due_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    # Invalid date format, skip
+                    continue
+        
+        elif status == "failed":
+            # Check if retryable (next_retry_at_utc <= now)
+            next_retry_at_utc_str = item.get("next_retry_at_utc")
+            if next_retry_at_utc_str:
+                try:
+                    next_retry_at_utc = datetime.strptime(next_retry_at_utc_str, "%Y-%m-%d %H:%M")
+                    next_retry_at_utc = next_retry_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if next_retry_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    # Invalid date format, skip
+                    continue
+    
+    # Apply limit
+    due_items = due_items[:limit]
+    
+    if not due_items:
+        return {
+            "status": "ok",
+            "workflow": "queue-message-dispatch",
+            "action": "no_due_items",
+            "message": "No due items to dispatch",
+            "now_utc": now_utc_str,
+        }
+    
+    # Process each due item
+    results = []
+    updated_items = list(items)  # Copy for atomic update
+    
+    for item in due_items:
+        item_id = item.get("id")
+        item_index = -1
+        
+        # Find index in updated_items
+        for i, u in enumerate(updated_items):
+            if u.get("id") == item_id:
+                item_index = i
+                break
+        
+        if item_index < 0:
+            continue
+        
+        # Get item details
+        channel_id = item.get("channel_id")
+        payload = item.get("payload", {})
+        message_text = payload.get("message", "")
+        attempt_count = item.get("attempt_count", 0)
+        max_attempts = item.get("max_attempts", QUEUE_DEFAULT_MAX_ATTEMPTS)
+        
+        result = {
+            "id": item_id,
+            "kind": item.get("kind"),
+            "pillar_slug": item.get("pillar_slug"),
+            "channel_id": channel_id,
+            "attempt": attempt_count + 1,
+        }
+        
+        if dry_run:
+            result["action"] = "dry_run"
+            result["message"] = "Would send message (dry run)"
+            results.append(result)
+            continue
+        
+        # Try to send via message tool
+        try:
+            # Import message tool (assumes openclaw is available)
+            import subprocess
+            import json as json_module
+            
+            # Build message command
+            cmd = [
+                "openclaw", "message", "send",
+                "--channel", "discord",
+                "--target", channel_id,
+                "--message", message_text,
+            ]
+            
+            # Execute message send
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if proc.returncode == 0:
+                # Success - mark as sent
+                now_ist = now_in_tz("Asia/Kolkata")
+                updated_item = update_queue_item(
+                    updated_items[item_index],
+                    status="sent",
+                    attempt_count=attempt_count + 1,
+                )
+                updated_item["sent_at_ist"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                updated_item["sent_at_utc"] = now_utc.strftime("%Y-%m-%d %H:%M")
+                updated_items[item_index] = updated_item
+                
+                result["action"] = "sent"
+                result["message"] = f"Successfully sent to channel {channel_id}"
+                results.append(result)
+            else:
+                # Failed - increment attempt count and schedule retry
+                error_msg = proc.stderr.strip() if proc.stderr else "Unknown error"
+                new_attempt_count = attempt_count + 1
+                
+                # Check if max attempts reached
+                if new_attempt_count >= max_attempts:
+                    # Terminal failure
+                    updated_item = update_queue_item(
+                        updated_items[item_index],
+                        status="failed",
+                        attempt_count=new_attempt_count,
+                        last_error=error_msg,
+                    )
+                    updated_items[item_index] = updated_item
+                    
+                    result["action"] = "failed_terminal"
+                    result["message"] = f"Max attempts ({max_attempts}) reached: {error_msg}"
+                    results.append(result)
+                else:
+                    # Schedule retry with backoff
+                    backoff_minutes = QUEUE_RETRY_BACKOFF_MINUTES[min(new_attempt_count - 1, len(QUEUE_RETRY_BACKOFF_MINUTES) - 1)]
+                    next_retry_at_utc = now_utc + timedelta(minutes=backoff_minutes)
+                    
+                    updated_item = update_queue_item(
+                        updated_items[item_index],
+                        status="failed",
+                        attempt_count=new_attempt_count,
+                        next_retry_at_utc=next_retry_at_utc.strftime("%Y-%m-%d %H:%M"),
+                        last_error=error_msg,
+                    )
+                    updated_items[item_index] = updated_item
+                    
+                    result["action"] = "failed_retry_scheduled"
+                    result["next_retry_at_utc"] = next_retry_at_utc.strftime("%Y-%m-%d %H:%M")
+                    result["message"] = f"Attempt {new_attempt_count}/{max_attempts} failed: {error_msg}. Retry in {backoff_minutes}m"
+                    results.append(result)
+        
+        except subprocess.TimeoutExpired:
+            # Timeout - treat as failure
+            new_attempt_count = attempt_count + 1
+            
+            if new_attempt_count >= max_attempts:
+                updated_item = update_queue_item(
+                    updated_items[item_index],
+                    status="failed",
+                    attempt_count=new_attempt_count,
+                    last_error="Message send timeout (30s)",
+                )
+                updated_items[item_index] = updated_item
+                
+                result["action"] = "failed_terminal"
+                result["message"] = f"Max attempts ({max_attempts}) reached: timeout"
+                results.append(result)
+            else:
+                backoff_minutes = QUEUE_RETRY_BACKOFF_MINUTES[min(new_attempt_count - 1, len(QUEUE_RETRY_BACKOFF_MINUTES) - 1)]
+                next_retry_at_utc = now_utc + timedelta(minutes=backoff_minutes)
+                
+                updated_item = update_queue_item(
+                    updated_items[item_index],
+                    status="failed",
+                    attempt_count=new_attempt_count,
+                    next_retry_at_utc=next_retry_at_utc.strftime("%Y-%m-%d %H:%M"),
+                    last_error="Message send timeout (30s)",
+                )
+                updated_items[item_index] = updated_item
+                
+                result["action"] = "failed_retry_scheduled"
+                result["next_retry_at_utc"] = next_retry_at_utc.strftime("%Y-%m-%d %H:%M")
+                result["message"] = f"Attempt {new_attempt_count}/{max_attempts} failed: timeout. Retry in {backoff_minutes}m"
+                results.append(result)
+        
+        except Exception as e:
+            # Unexpected error - treat as failure
+            error_msg = str(e)
+            new_attempt_count = attempt_count + 1
+            
+            if new_attempt_count >= max_attempts:
+                updated_item = update_queue_item(
+                    updated_items[item_index],
+                    status="failed",
+                    attempt_count=new_attempt_count,
+                    last_error=f"Unexpected error: {error_msg}",
+                )
+                updated_items[item_index] = updated_item
+                
+                result["action"] = "failed_terminal"
+                result["message"] = f"Max attempts ({max_attempts}) reached: {error_msg}"
+                results.append(result)
+            else:
+                backoff_minutes = QUEUE_RETRY_BACKOFF_MINUTES[min(new_attempt_count - 1, len(QUEUE_RETRY_BACKOFF_MINUTES) - 1)]
+                next_retry_at_utc = now_utc + timedelta(minutes=backoff_minutes)
+                
+                updated_item = update_queue_item(
+                    updated_items[item_index],
+                    status="failed",
+                    attempt_count=new_attempt_count,
+                    next_retry_at_utc=next_retry_at_utc.strftime("%Y-%m-%d %H:%M"),
+                    last_error=f"Unexpected error: {error_msg}",
+                )
+                updated_items[item_index] = updated_item
+                
+                result["action"] = "failed_retry_scheduled"
+                result["next_retry_at_utc"] = next_retry_at_utc.strftime("%Y-%m-%d %H:%M")
+                result["message"] = f"Attempt {new_attempt_count}/{max_attempts} failed: {error_msg}. Retry in {backoff_minutes}m"
+                results.append(result)
+    
+    # Atomically update queue file
+    if not dry_run:
+        write_queue_items(workspace, updated_items)
+    
+    # Count results
+    sent_count = sum(1 for r in results if r.get("action") == "sent")
+    failed_count = sum(1 for r in results if "failed" in r.get("action", ""))
+    retry_count = sum(1 for r in results if r.get("action") == "failed_retry_scheduled")
+    
+    return {
+        "status": "ok",
+        "workflow": "queue-message-dispatch",
+        "action": "dispatched" if not dry_run else "dry_run",
+        "now_utc": now_utc_str,
+        "processed": len(results),
+        "sent": sent_count,
+        "failed": failed_count,
+        "retry_scheduled": retry_count,
+        "results": results,
+        "message": f"Processed {len(results)} items: {sent_count} sent, {retry_count} retry scheduled, {failed_count - retry_count} terminal failures",
+    }
+
+
 def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     mode = "check" if bool(args.check) else "apply"
@@ -6531,9 +6859,10 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     nightly_report_enabled = bool(policy.get("checks", {}).get("nightly_report_integrity", True))
     daily_brief_generate_enabled = bool(policy.get("checks", {}).get("daily_brief_generate_integrity", True))
     cleanup_enabled = bool(policy.get("checks", {}).get("cleanup_integrity", True))
+    queue_dispatch_enabled = bool(policy.get("checks", {}).get("queue_dispatch_integrity", True))
 
     # Check if at least one check is enabled
-    if not any([daily_brief_enabled, nightly_audit_enabled, nightly_report_enabled, daily_brief_generate_enabled, cleanup_enabled]):
+    if not any([daily_brief_enabled, nightly_audit_enabled, nightly_report_enabled, daily_brief_generate_enabled, cleanup_enabled, queue_dispatch_enabled]):
         return {
             "status": "ok",
             "workflow": "heal",
@@ -6778,6 +7107,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     nightly_report_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
     daily_brief_gen_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
     cleanup_jobs: list[dict[str, Any]] = []
+    queue_dispatch_jobs: list[dict[str, Any]] = []
     unmanaged_jobs: list[dict[str, Any]] = []
 
     for job in cron_jobs:
@@ -6799,6 +7129,8 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
                 daily_brief_gen_jobs_by_slug.setdefault(managed_slug, []).append(job)
         elif is_managed_cleanup_job(job):
             cleanup_jobs.append(job)
+        elif is_managed_queue_dispatch_job(job):
+            queue_dispatch_jobs.append(job)
         else:
             unmanaged_jobs.append(job)
 
@@ -6807,7 +7139,8 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     nightly_report_before = sum(len(items) for items in nightly_report_jobs_by_slug.values())
     daily_brief_gen_before = sum(len(items) for items in daily_brief_gen_jobs_by_slug.values())
     cleanup_before = len(cleanup_jobs)
-    eligible_set = set(daily_brief_assignments.keys()) | set(nightly_audit_assignments.keys()) | set(nightly_report_assignments.keys()) | set(daily_brief_gen_assignments.keys())
+    queue_dispatch_before = len(queue_dispatch_jobs)
+    eligibleset = set(daily_brief_assignments.keys()) | set(nightly_audit_assignments.keys()) | set(nightly_report_assignments.keys()) | set(daily_brief_gen_assignments.keys())
 
     # Check for issues
     if daily_brief_enabled:
@@ -6860,11 +7193,18 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
         elif cleanup_enabled and len(cleanup_jobs) == 0:
             issues.append("Cron is missing cleanup job")
 
+    if queue_dispatch_enabled:
+        if len(queue_dispatch_jobs) > 1:
+            issues.append(f"Cron has {len(queue_dispatch_jobs)} queue dispatch jobs (expected 1)")
+        elif queue_dispatch_enabled and len(queue_dispatch_jobs) == 6:
+            issues.append("Cron is missing queue dispatch job")
+
     daily_brief_after = daily_brief_before
     nightly_audit_after = nightly_audit_before
     nightly_report_after = nightly_report_before
     daily_brief_gen_after = daily_brief_gen_before
     cleanup_after = cleanup_before
+    queue_dispatch_after = queue_dispatch_before
     daily_brief_created = 0
     daily_brief_updated = 0
     daily_brief_removed = 0
@@ -6880,6 +7220,9 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     cleanup_created = 0
     cleanup_updated = 0
     cleanup_removed = 0
+    queue_dispatch_created = 0
+    queue_dispatch_updated = 0
+    queue_dispatch_removed = 0
 
     if not check_only:
         rebuilt_jobs: list[dict[str, Any]] = list(unmanaged_jobs)
@@ -6986,6 +7329,20 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
                 cleanup_after = 1
             rebuilt_jobs.append(desired_cleanup)
 
+        # Rebuild queue dispatch job
+        if queue_dispatch_enabled:
+            desired_queue_dispatch = build_queue_dispatch_job()
+            if queue_dispatch_jobs:
+                existing_primary = queue_dispatch_jobs[0]
+                desired_queue_dispatch = preserve_runtime_fields(existing_primary, desired_queue_dispatch)
+                if existing_primary != desired_queue_dispatch:
+                    queue_dispatch_updated += 1
+                queue_dispatch_after = 1
+            else:
+                queue_dispatch_created = 1
+                queue_dispatch_after = 1
+            rebuilt_jobs.append(desired_queue_dispatch)
+
         # Save if anything changed
         if rebuilt_jobs != cron_jobs:
             cron_data["jobs"] = rebuilt_jobs
@@ -7006,6 +7363,9 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             cleanup_created = 0
             cleanup_updated = 0
             cleanup_removed = 0
+            queue_dispatch_created = 0
+            queue_dispatch_updated = 0
+            queue_dispatch_removed = 0
 
         # Record fixes
         if daily_brief_created:
@@ -7036,6 +7396,10 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             fixes.append("Cron: created cleanup job")
         if cleanup_updated:
             fixes.append("Cron: reconciled cleanup job")
+        if queue_dispatch_created:
+            fixes.append("Cron: created queue dispatch job")
+        if queue_dispatch_updated:
+            fixes.append("Cron: reconciled queue dispatch job")
 
     action = "checked" if check_only else "applied"
     return {
@@ -7046,7 +7410,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
         "policy_file": str(policy_file),
         "cron_store": str(cron_path),
         "checked_pillars": len(pillar_records),
-        "eligible_pillars": sorted(eligible_set),
+    eligible_pillars": sorted(eligibleset),
         "assignments": assignment_rows,
         "updated_pillars": sorted(updated_pillars),
         "issues": issues,
@@ -7077,6 +7441,11 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             "cleanup_created": cleanup_created,
             "cleanup_updated": cleanup_updated,
             "cleanup_removed": cleanup_removed,
+            "queue_dispatch_jobs_before": queue_dispatch_before,
+            "queue_dispatch_jobs_after": queue_dispatch_after,
+            "queue_dispatch_created": queue_dispatch_created,
+            "queue_dispatch_updated": queue_dispatch_updated,
+            "queue_dispatch_removed": queue_dispatch_removed,
             "issue_count": len(issues),
             "fix_count": len(fixes),
         },
@@ -8035,6 +8404,11 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cancel = subparsers.add_parser("queue-message-cancel", help="Cancel a message queue item")
     queue_cancel.add_argument("--id", required=True, help="Queue item ID")
     queue_cancel.set_defaults(func=cmd_queue_message_cancel)
+
+    queue_dispatch = subparsers.add_parser("queue-message-dispatch", help="Dispatch due queue items to Discord")
+    queue_dispatch.add_argument("--limit", type=int, default=10, help="Max items to dispatch (default: 10)")
+    queue_dispatch.add_argument("--dry-run", action="store_true", help="Show what would be sent without sending")
+    queue_dispatch.set_defaults(func=cmd_queue_message_dispatch)
 
     sync_cron = subparsers.add_parser("sync-cron", help="Ensure daily brief cron entry for a pillar")
     sync_cron.add_argument("--pillar", required=True)
