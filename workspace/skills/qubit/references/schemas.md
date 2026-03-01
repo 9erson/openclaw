@@ -158,7 +158,48 @@ success_metrics: []
 scope_boundaries: ""
 classical_questioning_status: in_progress
 classical_questioning_completed_at: null
+event_slug: null  # Optional: link to associated event
 ```
+
+## Event File Frontmatter
+
+Path:
+
+```text
+events/<event-slug>.md
+```
+
+Frontmatter:
+
+```yaml
+event_slug: "2026-03-11-mass-lar"
+title: "Mass at Lar de Estudantes"
+schema_version: 1
+created_at: "2026-03-01T05:43:00+05:30"
+updated_at: "2026-03-01T05:43:00+05:30"
+pillar_slug: santa-casa
+date: "2026-03-11"
+time: "10:30"
+status: scheduled  # scheduled, occurred, canceled, postponed
+project_slug: null  # Optional: auto-created project for preparation
+```
+
+Body contains event details, context, and notes.
+
+## Event Status Values
+
+1. `scheduled` - Event is planned
+2. `occurred` - Event has happened
+3. `canceled` - Event was canceled
+4. `postponed` - Event was postponed (date will be updated)
+
+## Event-Project Relationship
+
+- Events and projects are **decoupled** with separate lifecycles
+- Creating an event **may** auto-create a project (optional)
+- One event can have multiple preparation projects
+- One project can prepare for multiple events
+- Relationship is maintained via optional `event_slug` and `project_slug` fields
 
 Status enum:
 

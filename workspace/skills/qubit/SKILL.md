@@ -43,8 +43,9 @@ Scripts must remain deterministic and bounded:
 1. Ingest message: `references/workflows/ingest-message.md`
 2. Onboarding + classical questioning: `references/workflows/onboarding-and-cq.md`
 3. Daily brief + reviews: `references/workflows/daily-brief-and-reviews.md`
-4. Stage message lifecycle: `references/workflows/stage-message.md`
-5. Cron/heal/heartbeat: `references/workflows/cron-heal-heartbeat.md`
+4. Events: `references/workflows/events.md`
+5. Stage message lifecycle: `references/workflows/stage-message.md`
+6. Cron/heal/heartbeat: `references/workflows/cron-heal-heartbeat.md`
 
 ## Policy Index
 

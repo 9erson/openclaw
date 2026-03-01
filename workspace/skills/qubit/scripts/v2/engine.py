@@ -19,6 +19,7 @@ import yaml
 STATUSES = ("active", "paused", "retired")
 PROJECT_STATUSES = ("active", "blocked", "waiting", "done")
 REMINDER_STATUSES = ("pending", "done", "canceled")
+EVENT_STATUSES = ("scheduled", "occurred", "canceled", "postponed")
 STAGE_MESSAGE_STATUSES = ("scheduled", "notified", "completed", "canceled", "failed")
 STAGE_DELIVERY_METHODS = ("email", "whatsapp")
 STAGE_CONDITION_KINDS = ("parent_uncompleted_after_days",)
@@ -2466,6 +2467,163 @@ def create_project(
 
     write_markdown(project_file, frontmatter, body)
     return project_file
+
+
+def create_event(
+    workspace: Path,
+    pillar_slug: str,
+    title: str,
+    date: str,
+    time: str | None = None,
+    status: str = "scheduled",
+    create_project: bool = True,
+    project_title: str | None = None,
+) -> tuple[Path, Path | None]:
+    """Create an event and optionally auto-create a preparation project."""
+    
+    if status not in EVENT_STATUSES:
+        raise QubitError(f"Invalid event status {status!r}; expected one of {EVENT_STATUSES}")
+    
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    
+    # Create event slug from date and title
+    date_slug = date.replace("-", "")
+    title_slug = slugify(title)
+    event_slug = f"{date_slug}-{title_slug}"
+    
+    # Ensure events directory exists
+    events_dir = pillar_dir / "events"
+    ensure_dir(events_dir)
+    
+    event_file = events_dir / f"{event_slug}.md"
+    
+    # Check if event already exists
+    if event_file.exists():
+        frontmatter, body = read_markdown(event_file)
+    else:
+        frontmatter, body = {}, ""
+    
+    timestamp = now_iso(tz_name)
+    
+    # Parse and validate date
+    try:
+        event_date = parse_iso(date)
+    except Exception:
+        # Try simple date format
+        import re
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            event_date = datetime.fromisoformat(date)
+        else:
+            raise QubitError(f"Invalid date format: {date}. Use YYYY-MM-DD")
+    
+    frontmatter.update({
+        "event_slug": event_slug,
+        "title": title,
+        "schema_version": 1,
+        "created_at": frontmatter.get("created_at") or timestamp,
+        "updated_at": timestamp,
+        "pillar_slug": pillar_slug,
+        "date": date,
+        "time": time,
+        "status": status,
+        "project_slug": None,  # Will be set if project is created
+    })
+    
+    if not body.strip():
+        body = (
+            "## Event Details\n\n"
+            "Describe the event, participants, and key details.\n\n"
+            "## Notes\n\n"
+            "Capture planning notes and updates.\n"
+        )
+    
+    write_markdown(event_file, frontmatter, body)
+    
+    # Optionally create preparation project
+    project_file = None
+    if create_project:
+        proj_title = project_title or f"Prepare for {title}"
+        proj_outcome = f"Successfully execute {title}"
+        proj_due = f"{date}T{time}" if time else date
+        
+        try:
+            project_file = create_project(
+                workspace=workspace,
+                pillar_slug=pillar_slug,
+                title=proj_title,
+                outcome=proj_outcome,
+                next_decision="Define key decisions needed for this event",
+                next_action="Define first preparation action",
+                due_at=proj_due,
+                status="active",
+                tags=["event"],
+            )
+            
+            # Update event with project link
+            project_slug = project_file.parent.name
+            frontmatter["project_slug"] = project_slug
+            write_markdown(event_file, frontmatter, body)
+            
+            # Update project with event link
+            proj_fm, proj_body = read_markdown(project_file)
+            proj_fm["event_slug"] = event_slug
+            write_markdown(project_file, proj_fm, proj_body)
+            
+        except Exception as e:
+            # Don't fail event creation if project creation fails
+            pass
+    
+    return event_file, project_file
+
+
+def read_events(pillar_dir: Path) -> list[dict[str, Any]]:
+    """Read all events for a pillar."""
+    events_dir = pillar_dir / "events"
+    if not events_dir.exists():
+        return []
+    
+    events = []
+    for event_file in sorted(events_dir.glob("*.md")):
+        frontmatter, _ = read_markdown(event_file)
+        if frontmatter:
+            events.append(frontmatter)
+    
+    return events
+
+
+def cmd_add_event(args: argparse.Namespace) -> dict[str, Any]:
+    """Create a new event with optional auto-created project."""
+    workspace = Path(args.workspace).resolve()
+    pillar_slug = slugify(args.pillar)
+    
+    event_file, project_file = create_event(
+        workspace=workspace,
+        pillar_slug=pillar_slug,
+        title=args.title,
+        date=args.date,
+        time=args.time,
+        status=args.status,
+        create_project=args.create_project,
+        project_title=args.project_title,
+    )
+    
+    result = {
+        "status": "ok",
+        "workflow": "add-event",
+        "pillar_slug": pillar_slug,
+        "event_file": str(event_file),
+        "event_slug": event_file.stem,
+    }
+    
+    if project_file:
+        result["project_file"] = str(project_file)
+        result["project_slug"] = project_file.parent.name
+        result["project_created"] = True
+    else:
+        result["project_created"] = False
+    
+    return result
 
 
 def parse_due_phrase(phrase: str, tz_name: str) -> str | None:
@@ -5733,6 +5891,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_project.add_argument("--status", default="active", choices=PROJECT_STATUSES)
     add_project.add_argument("--tags", nargs="*", default=[])
     add_project.set_defaults(func=cmd_add_project)
+
+    add_event = subparsers.add_parser("add-event", help="Create an event with optional preparation project")
+    add_event.add_argument("--pillar", required=True)
+    add_event.add_argument("--title", required=True)
+    add_event.add_argument("--date", required=True, help="Event date (YYYY-MM-DD)")
+    add_event.add_argument("--time", help="Event time (HH:MM)")
+    add_event.add_argument("--status", default="scheduled", choices=EVENT_STATUSES)
+    add_event.add_argument("--create-project", action="store_true", default=True, help="Auto-create preparation project")
+    add_event.add_argument("--no-create-project", action="store_false", dest="create_project", help="Skip project creation")
+    add_event.add_argument("--project-title", help="Custom project title (default: 'Prepare for {event title}')")
+    add_event.set_defaults(func=cmd_add_event)
 
     classical = subparsers.add_parser("classical-questioning", help="Run classical-questioning workflow controls")
     classical.add_argument("--pillar", required=True)
