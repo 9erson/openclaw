@@ -34,6 +34,7 @@ DEFAULT_TIMEZONE = "Asia/Kolkata"
 DEFAULT_DAILY_BRIEF_TIME = "08:30"
 DEFAULT_QUIET_HOURS_START = "22:00"
 DEFAULT_QUIET_HOURS_END = "07:00"
+DEFAULT_NIGHTLY_AUDIT_TIME = "02:00"
 ONBOARDING_STATUSES = ("in_progress", "completed")
 ONBOARDING_STEPS = ("mission", "scope", "non_negotiables", "success_signals", "completed")
 MANIFESTO_PLACEHOLDER_MISSION = "Define the enduring mission for this pillar."
@@ -4223,6 +4224,345 @@ def cmd_classical_questioning(args: argparse.Namespace) -> dict[str, Any]:
     raise QubitError(f"Unsupported classical-questioning action {action!r}")
 
 
+# === NIGHTLY AUDIT FUNCTIONS ===
+
+def harvest_channel_messages(
+    workspace: Path,
+    pillar_slug: str,
+    date: str,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """Harvest all messages from a Discord channel for a specific date."""
+    import subprocess
+    import json as json_module
+    
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    channel_id = str(meta.get("discord_channel_id") or "")
+    
+    if not channel_id:
+        return []
+    
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    tz = ZoneInfo(tz_name)
+    
+    # Parse target date
+    try:
+        target_date = datetime.fromisoformat(date)
+    except Exception:
+        target_date = parse_iso(date)
+    
+    target_date = target_date.replace(tzinfo=tz)
+    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start_of_day + timedelta(days=1)
+    
+    # Harvest messages using openclaw CLI
+    messages = []
+    after_id = None
+    
+    while len(messages) < limit:
+        cmd = [
+            "openclaw", "message", "read",
+            "--channel", "discord",
+            "--target", f"channel:{channel_id}",
+            "--limit", "100",
+            "--json",
+        ]
+        
+        if after_id:
+            cmd.extend(["--after", after_id])
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json_module.loads(result.stdout)
+            batch = data.get("payload", {}).get("messages", [])
+            
+            if not batch:
+                break
+            
+            for msg in batch:
+                msg_time = datetime.fromisoformat(msg["timestampUtc"].replace("Z", "+00:00"))
+                msg_time_local = msg_time.astimezone(tz)
+                
+                if start_of_day <= msg_time_local < end_of_day:
+                    messages.append(msg)
+                elif msg_time_local < start_of_day:
+                    # We've gone past our target date
+                    return messages
+            
+            after_id = batch[-1]["id"]
+            
+        except Exception as e:
+            break
+    
+    return messages
+
+
+def analyze_messages(messages: list[dict[str, Any]], pillar_slug: str) -> dict[str, Any]:
+    """Analyze messages for actionable content."""
+    
+    analysis = {
+        "message_count": len(messages),
+        "user_messages": 0,
+        "bot_messages": 0,
+        "decisions": [],
+        "events": [],
+        "reminders": [],
+        "actions": [],
+        "threads": set(),
+    }
+    
+    event_patterns = [
+        r"\b(mass|workshop|meeting|camp|retreat|event|session|class)\b.*?\b(\d{1,2}(?:st|nd|rd|th)?\s+)?(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",
+        r"\b(\d{4}-\d{2}-\d{2})\b.*?\b(mass|workshop|meeting|camp|event)\b",
+        r"\b(tomorrow|next\s+\w+day|this\s+\w+day)\b.*?\b(at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
+    ]
+    
+    decision_patterns = [
+        r"\b(let\'s|we\'ll|we\s+will|decided|decision|going\s+to)\b",
+    ]
+    
+    reminder_patterns = [
+        r"\b(remind\s+me|don\'t\s+forget|follow\s+up|need\s+to|should)\b",
+    ]
+    
+    for msg in messages:
+        content = msg.get("content", "")
+        author = msg.get("author", {})
+        is_bot = author.get("bot", False)
+        
+        if is_bot:
+            analysis["bot_messages"] += 1
+        else:
+            analysis["user_messages"] += 1
+        
+        # Track threads
+        if msg.get("thread"):
+            analysis["threads"].add(msg["thread"]["id"])
+        
+        # Detect events (simplified for now)
+        for pattern in event_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                analysis["events"].append({
+                    "message_id": msg["id"],
+                    "content": content[:200],
+                    "timestamp": msg.get("timestampUtc"),
+                })
+                break
+        
+        # Detect decisions
+        for pattern in decision_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                analysis["decisions"].append({
+                    "message_id": msg["id"],
+                    "content": content[:200],
+                    "timestamp": msg.get("timestampUtc"),
+                })
+                break
+        
+        # Detect reminders
+        for pattern in reminder_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                analysis["reminders"].append({
+                    "message_id": msg["id"],
+                    "content": content[:200],
+                    "timestamp": msg.get("timestampUtc"),
+                })
+                break
+    
+    analysis["threads"] = list(analysis["threads"])
+    return analysis
+
+
+def detect_gaps(
+    workspace: Path,
+    pillar_slug: str,
+    analysis: dict[str, Any],
+    date: str,
+) -> list[dict[str, Any]]:
+    """Detect gaps between mentioned items and workspace files."""
+    
+    gaps = []
+    pillar_dir = get_or_create_pillar_by_slug(workspace, pillar_slug)[0]
+    
+    # Check for missing events
+    events = read_events(pillar_dir)
+    event_titles = [str(e.get("title", "")).lower() for e in events]
+    
+    for mentioned_event in analysis.get("events", []):
+        content_lower = mentioned_event["content"].lower()
+        found = any(title in content_lower for title in event_titles if title)
+        if not found:
+            gaps.append({
+                "type": "missing_event",
+                "severity": "high",
+                "content": mentioned_event["content"],
+                "timestamp": mentioned_event["timestamp"],
+            })
+    
+    # Check for missing reminders
+    reminders = read_reminders(pillar_dir / "reminders.jsonl")
+    reminder_messages = [str(r.get("message", "")).lower() for r in reminders if r.get("status") == "pending"]
+    
+    for mentioned_reminder in analysis.get("reminders", []):
+        content_lower = mentioned_reminder["content"].lower()
+        found = any(msg in content_lower for msg in reminder_messages if msg)
+        if not found:
+            gaps.append({
+                "type": "missing_reminder",
+                "severity": "medium",
+                "content": mentioned_reminder["content"],
+                "timestamp": mentioned_reminder["timestamp"],
+            })
+    
+    return gaps
+
+
+def update_daily_note_with_audit(
+    workspace: Path,
+    pillar_slug: str,
+    date: str,
+    analysis: dict[str, Any],
+    gaps: list[dict[str, Any]],
+) -> Path:
+    """Update daily note with audit recap."""
+    
+    memory_dir = workspace / "memory"
+    ensure_dir(memory_dir)
+    
+    note_file = memory_dir / f"{date}.md"
+    
+    # Read existing content
+    if note_file.exists():
+        with open(note_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    else:
+        content = f"# {date}\n\n"
+    
+    # Generate recap section
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    pillar_name = str(meta.get("display_name") or pillar_slug)
+    
+    recap_lines = [
+        f"\n## {pillar_name} Recap\n",
+        f"\n**Messages:** {analysis['message_count']} ({analysis['user_messages']} from you, {analysis['bot_messages']} from Qubit)\n",
+    ]
+    
+    if analysis.get("decisions"):
+        recap_lines.append("\n**Decisions Made:**\n")
+        for decision in analysis["decisions"][:5]:
+            recap_lines.append(f"- {decision['content'][:100]}\n")
+    
+    if analysis.get("events"):
+        recap_lines.append("\n**Events Mentioned:**\n")
+        for event in analysis["events"][:5]:
+            recap_lines.append(f"- {event['content'][:100]}\n")
+    
+    if gaps:
+        recap_lines.append(f"\n**Gaps Detected:** {len(gaps)} items need attention\n")
+        for gap in gaps[:3]:
+            recap_lines.append(f"- [{gap['severity'].upper()}] {gap['type']}: {gap['content'][:80]}\n")
+    
+    recap_lines.append("\n")
+    
+    # Append recap to note
+    recap_text = "".join(recap_lines)
+    
+    # Check if recap already exists
+    if f"## {pillar_name} Recap" not in content:
+        with open(note_file, "w", encoding="utf-8") as f:
+            f.write(content + recap_text)
+    
+    return note_file
+
+
+def generate_audit_report(
+    pillar_slug: str,
+    date: str,
+    analysis: dict[str, Any],
+    gaps: list[dict[str, Any]],
+) -> str:
+    """Generate Discord audit report message."""
+    
+    pillar_dir, meta = get_or_create_pillar_by_slug(Path.cwd(), pillar_slug)
+    pillar_name = str(meta.get("display_name") or pillar_slug)
+    
+    lines = [
+        f"🌙 **{pillar_name} Nightly Audit** | {date}",
+        "",
+        f"📊 **Captured:** {analysis['message_count']} messages",
+    ]
+    
+    if analysis.get("events"):
+        created = len([g for g in gaps if g["type"] == "missing_event"])
+        lines.append(f"✅ **Events:** {len(analysis['events']) - created} mentioned, {created} need creation")
+    
+    if analysis.get("reminders"):
+        missing = len([g for g in gaps if g["type"] == "missing_reminder"])
+        lines.append(f"📋 **Reminders:** {len(analysis['reminders']) - missing} captured, {missing} missed")
+    
+    if analysis.get("decisions"):
+        lines.append(f"🎯 **Decisions:** {len(analysis['decisions'])} logged")
+    
+    if gaps:
+        lines.append(f"⚠️ **Gaps:** {len(gaps)} items need attention")
+        lines.append("")
+        lines.append("**Missing:**")
+        for gap in gaps[:3]:
+            severity_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(gap["severity"], "⚪")
+            gap_type = gap["type"].replace("_", " ").title()
+            lines.append(f"- {severity_emoji} {gap_type}: {gap['content'][:60]}")
+    else:
+        lines.append("✅ **All items captured**")
+    
+    lines.append("")
+    lines.append(f"Daily note updated: `memory/{date}.md`")
+    
+    return "\n".join(lines)
+
+
+def cmd_audit_channel(args: argparse.Namespace) -> dict[str, Any]:
+    """Run nightly audit for a pillar channel."""
+    workspace = Path(args.workspace).resolve()
+    pillar_slug = slugify(args.pillar)
+    
+    # Determine date (default to yesterday)
+    if args.date:
+        date = args.date
+    else:
+        tz_name = DEFAULT_TIMEZONE
+        pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+        tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+        now_local = now_in_tz(tz_name)
+        yesterday = now_local - timedelta(days=1)
+        date = yesterday.strftime("%Y-%m-%d")
+    
+    # Harvest messages
+    messages = harvest_channel_messages(workspace, pillar_slug, date)
+    
+    # Analyze messages
+    analysis = analyze_messages(messages, pillar_slug)
+    
+    # Detect gaps
+    gaps = detect_gaps(workspace, pillar_slug, analysis, date)
+    
+    # Update daily note
+    note_file = update_daily_note_with_audit(workspace, pillar_slug, date, analysis, gaps)
+    
+    # Generate report
+    report = generate_audit_report(pillar_slug, date, analysis, gaps)
+    
+    return {
+        "status": "ok",
+        "workflow": "audit-channel",
+        "pillar_slug": pillar_slug,
+        "date": date,
+        "message_count": len(messages),
+        "gaps_detected": len(gaps),
+        "daily_note": str(note_file),
+        "report": report,
+    }
+
+
 def cmd_onboard(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     display_name = args.pillar_name.strip()
@@ -5924,6 +6264,11 @@ def build_parser() -> argparse.ArgumentParser:
     daily_brief.add_argument("--pillar", required=True)
     daily_brief.add_argument("--autonomous", action="store_true")
     daily_brief.set_defaults(func=cmd_daily_brief)
+
+    audit_channel = subparsers.add_parser("audit-channel", help="Run nightly audit for a pillar channel")
+    audit_channel.add_argument("--pillar", required=True)
+    audit_channel.add_argument("--date", help="Date to audit (YYYY-MM-DD), default: yesterday")
+    audit_channel.set_defaults(func=cmd_audit_channel)
 
     review_weekly = subparsers.add_parser("review-weekly", help="Run weekly review now and reset cadence")
     review_weekly.add_argument("--pillar", required=True)
