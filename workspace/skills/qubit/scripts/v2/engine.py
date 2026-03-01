@@ -5450,18 +5450,24 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     check_only = mode == "check"
 
     policy, policy_file = load_health_policy(workspace)
-    if not bool(policy.get("checks", {}).get("daily_brief_integrity", True)):
+
+    # Check if both daily brief and nightly audit are disabled
+    daily_brief_enabled = bool(policy.get("checks", {}).get("daily_brief_integrity", True))
+    nightly_audit_enabled = bool(policy.get("checks", {}).get("nightly_audit_integrity", True))
+
+    if not daily_brief_enabled and not nightly_audit_enabled:
         return {
             "status": "ok",
             "workflow": "heal",
             "mode": mode,
             "action": "skipped",
-            "reason": "daily_brief_integrity_disabled",
+            "reason": "both_daily_brief_and_nightly_audit_disabled",
             "policy_file": str(policy_file),
         }
 
     target_timezone = str(policy["timezone"])
-    window_start_minutes, window_end_minutes = daily_brief_window_bounds(policy)
+    daily_brief_start, daily_brief_end = daily_brief_window_bounds(policy)
+    nightly_audit_start, nightly_audit_end = nightly_audit_window_bounds(policy)
     blacklist = set(policy.get("channel_blacklist") or [])
 
     pillar_records: list[dict[str, Any]] = []
@@ -5501,18 +5507,33 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             )
 
     eligible_slugs = [record["pillar_slug"] for record in pillar_records if bool(record["eligible"])]
-    assignments = allocate_daily_brief_slots(
-        eligible_slugs,
-        start_minutes=window_start_minutes,
-        end_minutes=window_end_minutes,
-    )
+
+    # Allocate daily brief slots
+    daily_brief_assignments = {}
+    if daily_brief_enabled:
+        daily_brief_assignments = allocate_daily_brief_slots(
+            eligible_slugs,
+            start_minutes=daily_brief_start,
+            end_minutes=daily_brief_end,
+        )
+
+    # Allocate nightly audit slots
+    nightly_audit_assignments = {}
+    if nightly_audit_enabled:
+        nightly_audit_assignments = allocate_nightly_audit_slots(
+            eligible_slugs,
+            start_minutes=nightly_audit_start,
+            end_minutes=nightly_audit_end,
+        )
+
     assignment_rows = [
         {
             "pillar_slug": pillar_slug,
-            "daily_brief_time": assignments[pillar_slug],
+            "daily_brief_time": daily_brief_assignments.get(pillar_slug, ""),
+            "nightly_audit_time": nightly_audit_assignments.get(pillar_slug, ""),
             "timezone": target_timezone,
         }
-        for pillar_slug in sorted(assignments)
+        for pillar_slug in sorted(eligible_slugs)
     ]
 
     issues: list[str] = []
@@ -5527,7 +5548,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
         changed = False
 
         if record["eligible"]:
-            desired_time = assignments[pillar_slug]
+            # Update timezone
             current_timezone = str(meta.get("timezone") or "")
             if current_timezone != target_timezone:
                 issues.append(
@@ -5538,29 +5559,60 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
                     changed = True
                     fixes.append(f"Pillar '{pillar_slug}': set timezone to {target_timezone}")
 
-            current_daily_time = str(meta.get("daily_brief_time") or "")
-            if current_daily_time != desired_time:
-                issues.append(
-                    f"Pillar '{pillar_slug}' daily_brief_time drift: expected {desired_time}, got {current_daily_time or 'unset'}"
-                )
-                if not check_only:
-                    meta["daily_brief_time"] = desired_time
-                    changed = True
-                    fixes.append(f"Pillar '{pillar_slug}': set daily_brief_time to {desired_time}")
+            # Update daily brief time
+            if daily_brief_enabled:
+                desired_daily_time = daily_brief_assignments.get(pillar_slug, "")
+                current_daily_time = str(meta.get("daily_brief_time") or "")
+                if current_daily_time != desired_daily_time:
+                    issues.append(
+                        f"Pillar '{pillar_slug}' daily_brief_time drift: expected {desired_daily_time}, got {current_daily_time or 'unset'}"
+                    )
+                    if not check_only:
+                        meta["daily_brief_time"] = desired_daily_time
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': set daily_brief_time to {desired_daily_time}")
 
-            if meta.get("daily_brief_enabled") is not True:
-                issues.append(f"Pillar '{pillar_slug}' daily brief is disabled but should be enabled")
-                if not check_only:
-                    meta["daily_brief_enabled"] = True
-                    changed = True
-                    fixes.append(f"Pillar '{pillar_slug}': enabled daily brief")
+                if meta.get("daily_brief_enabled") is not True:
+                    issues.append(f"Pillar '{pillar_slug}' daily brief is disabled but should be enabled")
+                    if not check_only:
+                        meta["daily_brief_enabled"] = True
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': enabled daily brief")
+
+            # Update nightly audit time
+            if nightly_audit_enabled:
+                desired_audit_time = nightly_audit_assignments.get(pillar_slug, "")
+                current_audit_time = str(meta.get("nightly_audit_time") or "")
+                if current_audit_time != desired_audit_time:
+                    issues.append(
+                        f"Pillar '{pillar_slug}' nightly_audit_time drift: expected {desired_audit_time}, got {current_audit_time or 'unset'}"
+                    )
+                    if not check_only:
+                        meta["nightly_audit_time"] = desired_audit_time
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': set nightly_audit_time to {desired_audit_time}")
+
+                if meta.get("nightly_audit_enabled") is not True:
+                    issues.append(f"Pillar '{pillar_slug}' nightly audit is disabled but should be enabled")
+                    if not check_only:
+                        meta["nightly_audit_enabled"] = True
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': enabled nightly audit")
         else:
-            if record["blacklisted"] and meta.get("daily_brief_enabled") is not False:
-                issues.append(f"Pillar '{pillar_slug}' is blacklisted by channel name but daily brief is enabled")
-                if not check_only:
-                    meta["daily_brief_enabled"] = False
-                    changed = True
-                    fixes.append(f"Pillar '{pillar_slug}': disabled daily brief because channel is blacklisted")
+            if record["blacklisted"]:
+                if daily_brief_enabled and meta.get("daily_brief_enabled") is not False:
+                    issues.append(f"Pillar '{pillar_slug}' is blacklisted by channel name but daily brief is enabled")
+                    if not check_only:
+                        meta["daily_brief_enabled"] = False
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': disabled daily brief because channel is blacklisted")
+
+                if nightly_audit_enabled and meta.get("nightly_audit_enabled") is not False:
+                    issues.append(f"Pillar '{pillar_slug}' is blacklisted by channel name but nightly audit is enabled")
+                    if not check_only:
+                        meta["nightly_audit_enabled"] = False
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': disabled nightly audit because channel is blacklisted")
 
             if (
                 str(record["status"]) == "active"
