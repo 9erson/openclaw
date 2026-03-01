@@ -5635,66 +5635,131 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     cron_data = load_cron_jobs(cron_path)
     cron_jobs = cron_data["jobs"]
 
-    managed_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    # Separate tracking for daily brief and nightly audit jobs
+    daily_brief_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    nightly_audit_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
     unmanaged_jobs: list[dict[str, Any]] = []
+
     for job in cron_jobs:
-        managed_slug = managed_job_pillar_slug(job)
-        if managed_slug:
-            managed_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        if is_managed_daily_brief_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if managed_slug:
+                daily_brief_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        elif is_managed_nightly_audit_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if managed_slug:
+                nightly_audit_jobs_by_slug.setdefault(managed_slug, []).append(job)
         else:
             unmanaged_jobs.append(job)
 
-    managed_before = sum(len(items) for items in managed_jobs_by_slug.values())
-    eligible_set = set(assignments)
+    daily_brief_before = sum(len(items) for items in daily_brief_jobs_by_slug.values())
+    nightly_audit_before = sum(len(items) for items in nightly_audit_jobs_by_slug.values())
+    eligible_set = set(daily_brief_assignments.keys()) | set(nightly_audit_assignments.keys())
 
-    for pillar_slug, grouped_jobs in sorted(managed_jobs_by_slug.items()):
-        if pillar_slug not in eligible_set:
-            issues.append(f"Cron has managed daily brief job for non-eligible pillar '{pillar_slug}'")
-        if len(grouped_jobs) > 1:
-            issues.append(f"Cron has duplicate managed daily brief jobs for pillar '{pillar_slug}'")
+    # Check for issues
+    if daily_brief_enabled:
+        for pillar_slug, grouped_jobs in sorted(daily_brief_jobs_by_slug.items()):
+            if pillar_slug not in eligible_set:
+                issues.append(f"Cron has managed daily brief job for non-eligible pillar '{pillar_slug}'")
+            if len(grouped_jobs) > 1:
+                issues.append(f"Cron has duplicate managed daily brief jobs for pillar '{pillar_slug}'")
 
-    for pillar_slug in sorted(eligible_set):
-        if pillar_slug not in managed_jobs_by_slug:
-            issues.append(f"Cron is missing managed daily brief job for eligible pillar '{pillar_slug}'")
+        for pillar_slug in sorted(set(daily_brief_assignments.keys())):
+            if pillar_slug not in daily_brief_jobs_by_slug:
+                issues.append(f"Cron is missing managed daily brief job for eligible pillar '{pillar_slug}'")
 
-    managed_after = managed_before
-    cron_created = 0
-    cron_updated = 0
-    cron_removed = 0
+    if nightly_audit_enabled:
+        for pillar_slug, grouped_jobs in sorted(nightly_audit_jobs_by_slug.items()):
+            if pillar_slug not in eligible_set:
+                issues.append(f"Cron has managed nightly audit job for non-eligible pillar '{pillar_slug}'")
+            if len(grouped_jobs) > 1:
+                issues.append(f"Cron has duplicate managed nightly audit jobs for pillar '{pillar_slug}'")
+
+        for pillar_slug in sorted(set(nightly_audit_assignments.keys())):
+            if pillar_slug not in nightly_audit_jobs_by_slug:
+                issues.append(f"Cron is missing managed nightly audit job for eligible pillar '{pillar_slug}'")
+
+    daily_brief_after = daily_brief_before
+    nightly_audit_after = nightly_audit_before
+    daily_brief_created = 0
+    daily_brief_updated = 0
+    daily_brief_removed = 0
+    nightly_audit_created = 0
+    nightly_audit_updated = 0
+    nightly_audit_removed = 0
+
     if not check_only:
-        rebuilt_managed_jobs: list[dict[str, Any]] = []
-        existing_kept = 0
-        for pillar_slug in sorted(eligible_set):
-            record = pillar_by_slug[pillar_slug]
-            desired_job = build_daily_brief_job(record["meta"])
-            existing_jobs = managed_jobs_by_slug.get(pillar_slug, [])
-            if existing_jobs:
-                existing_kept += 1
-                existing_primary = existing_jobs[0]
-                desired_job = preserve_runtime_fields(existing_primary, desired_job)
-                if existing_primary != desired_job:
-                    cron_updated += 1
-            else:
-                cron_created += 1
-            rebuilt_managed_jobs.append(desired_job)
+        rebuilt_jobs: list[dict[str, Any]] = list(unmanaged_jobs)
 
-        managed_after = len(rebuilt_managed_jobs)
-        cron_removed = managed_before - existing_kept
-        rebuilt_jobs = unmanaged_jobs + rebuilt_managed_jobs
+        # Rebuild daily brief jobs
+        if daily_brief_enabled:
+            rebuilt_daily_brief: list[dict[str, Any]] = []
+            existing_kept = 0
+            for pillar_slug in sorted(daily_brief_assignments.keys()):
+                record = pillar_by_slug[pillar_slug]
+                desired_job = build_daily_brief_job(record["meta"])
+                existing_jobs = daily_brief_jobs_by_slug.get(pillar_slug, [])
+                if existing_jobs:
+                    existing_kept += 1
+                    existing_primary = existing_jobs[0]
+                    desired_job = preserve_runtime_fields(existing_primary, desired_job)
+                    if existing_primary != desired_job:
+                        daily_brief_updated += 1
+                else:
+                    daily_brief_created += 1
+                rebuilt_daily_brief.append(desired_job)
+
+            daily_brief_after = len(rebuilt_daily_brief)
+            daily_brief_removed = daily_brief_before - existing_kept
+            rebuilt_jobs.extend(rebuilt_daily_brief)
+
+        # Rebuild nightly audit jobs
+        if nightly_audit_enabled:
+            rebuilt_nightly_audit: list[dict[str, Any]] = []
+            existing_kept = 0
+            for pillar_slug in sorted(nightly_audit_assignments.keys()):
+                record = pillar_by_slug[pillar_slug]
+                desired_job = build_nightly_audit_job(record["meta"])
+                existing_jobs = nightly_audit_jobs_by_slug.get(pillar_slug, [])
+                if existing_jobs:
+                    existing_kept += 1
+                    existing_primary = existing_jobs[0]
+                    desired_job = preserve_runtime_fields(existing_primary, desired_job)
+                    if existing_primary != desired_job:
+                        nightly_audit_updated += 1
+                else:
+                    nightly_audit_created += 1
+                rebuilt_nightly_audit.append(desired_job)
+
+            nightly_audit_after = len(rebuilt_nightly_audit)
+            nightly_audit_removed = nightly_audit_before - existing_kept
+            rebuilt_jobs.extend(rebuilt_nightly_audit)
+
+        # Save if anything changed
         if rebuilt_jobs != cron_jobs:
             cron_data["jobs"] = rebuilt_jobs
             save_json(cron_path, cron_data)
         else:
-            cron_created = 0
-            cron_updated = 0
-            cron_removed = 0
+            daily_brief_created = 0
+            daily_brief_updated = 0
+            daily_brief_removed = 0
+            nightly_audit_created = 0
+            nightly_audit_updated = 0
+            nightly_audit_removed = 0
 
-        if cron_created:
-            fixes.append(f"Cron: created {cron_created} managed daily brief job(s)")
-        if cron_updated:
-            fixes.append(f"Cron: reconciled {cron_updated} managed daily brief job(s)")
-        if cron_removed:
-            fixes.append(f"Cron: removed {cron_removed} stale/duplicate managed daily brief job(s)")
+        # Record fixes
+        if daily_brief_created:
+            fixes.append(f"Cron: created {daily_brief_created} daily brief job(s)")
+        if daily_brief_updated:
+            fixes.append(f"Cron: reconciled {daily_brief_updated} daily brief job(s)")
+        if daily_brief_removed:
+            fixes.append(f"Cron: removed {daily_brief_removed} stale/duplicate daily brief job(s)")
+        if nightly_audit_created:
+            fixes.append(f"Cron: created {nightly_audit_created} nightly audit job(s)")
+        if nightly_audit_updated:
+            fixes.append(f"Cron: reconciled {nightly_audit_updated} nightly audit job(s)")
+        if nightly_audit_removed:
+            fixes.append(f"Cron: removed {nightly_audit_removed} stale/duplicate nightly audit job(s)")
 
     action = "checked" if check_only else "applied"
     return {
@@ -5711,11 +5776,16 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
         "issues": issues,
         "fixes": fixes,
         "metrics": {
-            "managed_jobs_before": managed_before,
-            "managed_jobs_after": managed_after,
-            "cron_jobs_created": cron_created,
-            "cron_jobs_updated": cron_updated,
-            "cron_jobs_removed": cron_removed,
+            "daily_brief_jobs_before": daily_brief_before,
+            "daily_brief_jobs_after": daily_brief_after,
+            "daily_brief_created": daily_brief_created,
+            "daily_brief_updated": daily_brief_updated,
+            "daily_brief_removed": daily_brief_removed,
+            "nightly_audit_jobs_before": nightly_audit_before,
+            "nightly_audit_jobs_after": nightly_audit_after,
+            "nightly_audit_created": nightly_audit_created,
+            "nightly_audit_updated": nightly_audit_updated,
+            "nightly_audit_removed": nightly_audit_removed,
             "issue_count": len(issues),
             "fix_count": len(fixes),
         },
