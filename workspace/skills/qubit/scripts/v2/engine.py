@@ -7145,7 +7145,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     # Check for issues
     if daily_brief_enabled:
         for pillar_slug, grouped_jobs in sorted(daily_brief_jobs_by_slug.items()):
-            if pillar_slug not in eligible_set:
+            if pillar_slug not in eligibleset:
                 issues.append(f"Cron has managed daily brief job for non-eligible pillar '{pillar_slug}'")
             if len(grouped_jobs) > 1:
                 issues.append(f"Cron has duplicate managed daily brief jobs for pillar '{pillar_slug}'")
@@ -7156,7 +7156,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
 
     if nightly_audit_enabled:
         for pillar_slug, grouped_jobs in sorted(nightly_audit_jobs_by_slug.items()):
-            if pillar_slug not in eligible_set:
+            if pillar_slug not in eligibleset:
                 issues.append(f"Cron has managed nightly audit job for non-eligible pillar '{pillar_slug}'")
             if len(grouped_jobs) > 1:
                 issues.append(f"Cron has duplicate managed nightly audit jobs for pillar '{pillar_slug}'")
@@ -7167,7 +7167,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
 
     if nightly_report_enabled:
         for pillar_slug, grouped_jobs in sorted(nightly_report_jobs_by_slug.items()):
-            if pillar_slug not in eligible_set:
+            if pillar_slug not in eligibleset:
                 issues.append(f"Cron has managed nightly report job for non-eligible pillar '{pillar_slug}'")
             if len(grouped_jobs) > 1:
                 issues.append(f"Cron has duplicate managed nightly report jobs for pillar '{pillar_slug}'")
@@ -7178,7 +7178,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
 
     if daily_brief_generate_enabled:
         for pillar_slug, grouped_jobs in sorted(daily_brief_gen_jobs_by_slug.items()):
-            if pillar_slug not in eligible_set:
+            if pillar_slug not in eligibleset:
                 issues.append(f"Cron has managed daily brief generate job for non-eligible pillar '{pillar_slug}'")
             if len(grouped_jobs) > 1:
                 issues.append(f"Cron has duplicate managed daily brief generate jobs for pillar '{pillar_slug}'")
@@ -7410,7 +7410,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
         "policy_file": str(policy_file),
         "cron_store": str(cron_path),
         "checked_pillars": len(pillar_records),
-    eligible_pillars": sorted(eligibleset),
+        "eligible_pillars": sorted(eligibleset),
         "assignments": assignment_rows,
         "updated_pillars": sorted(updated_pillars),
         "issues": issues,
