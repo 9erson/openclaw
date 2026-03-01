@@ -6348,9 +6348,12 @@ def check_ready_reports(
                 "dispatch_command": f"qubit {pillar_slug} send-report --type nightly --date {date}",
             })
     
-    # Check daily briefs (only send 6-8 AM local time)
+    # Check daily briefs (only send at 5:00 AM local time)
     local_hour = local_now.hour
-    if 6 <= local_hour < 8:  # Morning window for daily briefs
+    local_minute = local_now.minute
+    
+    # Send window: 5:00-5:59 AM local time
+    if local_hour == 5:
         for date, entry in metadata.get("daily", {}).items():
             if not entry.get("ready_at"):
                 continue
