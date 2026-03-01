@@ -1,0 +1,6 @@
+{
+  "timezone": "Asia/Kolkata",
+  "daily_brief_window_start": "04:00",
+  "daily_brief_window_end": "05:00",
+  "channel_blacklist": ["general"]
+}

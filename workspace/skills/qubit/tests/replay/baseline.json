@@ -1,0 +1,142 @@
+{
+  "daily_brief_personal": {
+    "exit_code": 0,
+    "stdout": {
+      "status": "ok",
+      "workflow": "daily-brief",
+      "pillar_slug": "personal",
+      "run_mode": "interactive",
+      "message": "Qubit Daily Brief | Personal\n\nDecisions Needed:\n- None captured. Identify one decision that will unblock progress today.\n\nDue Soon (48h):\n- No pending reminders due in the next 48 hours.\n\nBlocked Projects:\n- No blocked projects detected.\n\nTop 3 Next Actions:\n- Define the next concrete action for active projects.\n\nPrompt:\n- Which one decision, if made now, will create the most progress today?"
+    },
+    "stderr": ""
+  },
+  "heal_check": {
+    "exit_code": 0,
+    "stdout": {
+      "status": "ok",
+      "workflow": "heal",
+      "mode": "check",
+      "action": "checked",
+      "policy_file": "/private/var/folders/xv/gw8gxp991c923yxgjlkqf4jr0000gn/T/qubit-replay-heal_check-6u88rj9a/workspace/qubit/meta/health-policy.json",
+      "cron_store": "/private/var/folders/xv/gw8gxp991c923yxgjlkqf4jr0000gn/T/qubit-replay-heal_check-6u88rj9a/cron/jobs.json",
+      "checked_pillars": 1,
+      "eligible_pillars": [
+        "personal"
+      ],
+      "assignments": [
+        {
+          "pillar_slug": "personal",
+          "daily_brief_time": "04:00",
+          "timezone": "Asia/Kolkata"
+        }
+      ],
+      "updated_pillars": [],
+      "issues": [
+        "Pillar 'personal' daily_brief_time drift: expected 04:00, got 08:30",
+        "Cron is missing managed daily brief job for eligible pillar 'personal'"
+      ],
+      "fixes": [],
+      "metrics": {
+        "managed_jobs_before": 0,
+        "managed_jobs_after": 0,
+        "cron_jobs_created": 0,
+        "cron_jobs_updated": 0,
+        "cron_jobs_removed": 0,
+        "issue_count": 2,
+        "fix_count": 0
+      }
+    },
+    "stderr": ""
+  },
+  "due_scan": {
+    "exit_code": 0,
+    "stdout": {
+      "status": "ok",
+      "workflow": "due-scan",
+      "checked_at": "2026-03-01T08:36:54+05:30",
+      "due_actions": []
+    },
+    "stderr": ""
+  },
+  "ingest_message": {
+    "exit_code": 0,
+    "stdout": {
+      "status": "ok",
+      "workflow": "ingest-message",
+      "pillar_slug": "personal",
+      "applied_actions": [
+        "Appended journal entry in 2026-03.md"
+      ],
+      "pending_confirmation": [],
+      "uncertainties": [],
+      "clarification": null,
+      "stage_message_suggestion": null
+    },
+    "stderr": ""
+  },
+  "onboard_new": {
+    "exit_code": 0,
+    "stdout": {
+      "status": "ok",
+      "workflow": "onboard",
+      "pillar_slug": "replay-pillar",
+      "pillar_dir": "/private/var/folders/xv/gw8gxp991c923yxgjlkqf4jr0000gn/T/qubit-replay-onboard_new-t7sfoyr2/workspace/pillars/active/replay-pillar",
+      "created": true,
+      "layout": {
+        "files": [
+          "reminders.jsonl",
+          "staged-messages.jsonl"
+        ],
+        "dirs": [
+          "contacts",
+          "journal",
+          "projects",
+          "archive"
+        ]
+      },
+      "manifesto_updated": true,
+      "journal_seeded": "/private/var/folders/xv/gw8gxp991c923yxgjlkqf4jr0000gn/T/qubit-replay-onboard_new-t7sfoyr2/workspace/pillars/active/replay-pillar/journal/2026-03.md",
+      "onboarding_status": "in_progress",
+      "onboarding_step": "mission",
+      "question": "What is the core mission of this pillar in one concrete sentence?",
+      "classical_questioning": {
+        "session_id": "cq-704d40172e26",
+        "context_type": "onboarding",
+        "status": "in_progress",
+        "response_mode": "question_only",
+        "coverage": {
+          "grammar": 0,
+          "logic": 0,
+          "rhetoric": 0,
+          "total": 0
+        },
+        "question_count": 1,
+        "question_cap": 12,
+        "next_question": "What is the core mission of this pillar in one concrete sentence?",
+        "remaining_requirements": [
+          "grammar<3",
+          "logic<2",
+          "total<5",
+          "slot:mission",
+          "slot:scope",
+          "slot:success_signals",
+          "slot:non_negotiables"
+        ],
+        "hard_gate_blocked": true,
+        "resume_hint": null
+      },
+      "hard_gate_blocked": true,
+      "resume_hint": null,
+      "cron": {
+        "action": "skipped",
+        "reason": "onboarding_in_progress",
+        "store": "/private/var/folders/xv/gw8gxp991c923yxgjlkqf4jr0000gn/T/qubit-replay-onboard_new-t7sfoyr2/cron/jobs.json"
+      },
+      "next_steps": [
+        "Answer the onboarding question in this channel to continue the real-time setup.",
+        "Daily brief automation starts automatically after onboarding is completed."
+      ]
+    },
+    "stderr": ""
+  }
+}

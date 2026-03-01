@@ -1,5 +1,12 @@
 # Qubit v1 Operations
 
+This file is retained for broad operational context.
+For lazy-loaded workflow execution, prefer focused files under:
+
+1. `references/workflows/`
+2. `references/policies/`
+3. `references/contracts/`
+
 ## Command and Interaction Model
 
 1. Support `qubit <pillar> <workflow> [args]` for explicit workflows.

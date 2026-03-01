@@ -1,0 +1,27 @@
+[
+  {
+    "id": "daily_brief_personal",
+    "argv": ["--workspace", "{workspace}", "daily-brief", "--pillar", "personal"],
+    "compare_keys": ["status", "workflow", "pillar_slug"]
+  },
+  {
+    "id": "heal_check",
+    "argv": ["--workspace", "{workspace}", "heal", "--check"],
+    "compare_keys": ["status", "workflow", "issues", "fixes", "metrics"]
+  },
+  {
+    "id": "due_scan",
+    "argv": ["--workspace", "{workspace}", "due-scan"],
+    "compare_keys": ["status", "workflow", "due_actions"]
+  },
+  {
+    "id": "ingest_message",
+    "argv": ["--workspace", "{workspace}", "ingest-message", "--pillar", "personal", "--message", "Journal: shipped alpha release"],
+    "compare_keys": ["status", "workflow", "pillar_slug", "pending_confirmation", "uncertainties"]
+  },
+  {
+    "id": "onboard_new",
+    "argv": ["--workspace", "{workspace}", "onboard", "--pillar-name", "Replay Pillar", "--channel-id", "999999999999999999"],
+    "compare_keys": ["status", "workflow", "onboarding_status", "onboarding_step", "hard_gate_blocked", "response_mode"]
+  }
+]

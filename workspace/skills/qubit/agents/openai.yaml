@@ -1,4 +1,4 @@
 interface:
   display_name: "Qubit"
   short_description: "Run OpenClaw pillar workflows in Discord"
-  default_prompt: "Use $qubit to run a pillar workflow or process a Discord message into actions."
+  default_prompt: "Use $qubit to run pillar workflows with lazy-loaded references/templates and deterministic script primitives."
