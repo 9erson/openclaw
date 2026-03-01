@@ -3319,9 +3319,85 @@ def parse_explicit_command(message: str) -> tuple[str, dict[str, Any]] | None:
     return None
 
 
+def generate_strategic_question(
+    pillar_slug: str,
+    meta: dict[str, Any],
+    projects: list[dict[str, Any]],
+    reminders: list[dict[str, Any]],
+    now_dt: datetime,
+) -> str:
+    """Generate a contextual strategic question based on pillar state."""
+    
+    # Gather pillar state
+    onboarding_status = str(meta.get("onboarding_status") or "in_progress")
+    onboarding_completed_at = meta.get("onboarding_completed_at")
+    review_tracking_started = meta.get("review_tracking_started_at")
+    
+    active_projects = [p for p in projects if str(p.get("status")) in ("active", "blocked", "waiting")]
+    blocked_projects = [p for p in active_projects if str(p.get("status")) == "blocked"]
+    done_projects = [p for p in projects if str(p.get("status")) == "done"]
+    
+    pending_reminders = [r for r in reminders if str(r.get("status")) == "pending"]
+    
+    # Calculate time since onboarding
+    days_since_onboarding = 0
+    if onboarding_completed_at:
+        try:
+            onboarded_dt = parse_iso(str(onboarding_completed_at))
+            days_since_onboarding = (now_dt - onboarded_dt).days
+        except Exception:
+            pass
+    
+    # Determine pillar state and generate appropriate question
+    
+    # Newly onboarded (less than 7 days)
+    if onboarding_status != "completed":
+        return "What would make this pillar feel useful in the next 30 days?"
+    
+    if days_since_onboarding < 7:
+        return "What's the one initiative that would have the most impact right now?"
+    
+    # No active projects
+    if not active_projects:
+        if done_projects:
+            return "You've completed projects but nothing is active. What's the next natural evolution?"
+        return "What's missing from this pillar that would make it feel alive?"
+    
+    # All projects blocked
+    if len(blocked_projects) == len(active_projects) and len(active_projects) > 1:
+        return "What's the pattern behind why these projects are stuck?"
+    
+    # Many active, few done
+    if len(active_projects) > 3 and len(done_projects) < 2:
+        return "Which project, if completed, would unlock the others?"
+    
+    # First review pending
+    if not review_tracking_started and days_since_onboarding > 7:
+        return "What would a successful first quarter look like for this pillar?"
+    
+    # High reminder count
+    if len(pending_reminders) > 5:
+        return "Are these reminders serving your priorities, or just your anxieties?"
+    
+    # Quiet period (no due reminders soon, no blockers)
+    if not pending_reminders and not blocked_projects:
+        return "Is this pillar still serving its purpose, or does the mission need updating?"
+    
+    # Default: focus on next evolution
+    if done_projects:
+        return "Based on what you've completed, what's the natural next step forward?"
+    
+    return "What's the one thing that, if clarified, would make everything else easier?"
+
+
 def format_daily_brief(pillar_slug: str, meta: dict[str, Any], projects: list[dict[str, Any]], reminders: list[dict[str, Any]]) -> str:
     tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
     now_dt = now_in_tz(tz_name)
+    
+    # Get day of week
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    day_of_week = day_names[now_dt.weekday()]
+    pillar_name = str(meta.get("display_name") or pillar_slug)
 
     active_projects = [p for p in projects if str(p.get("status")) in ("active", "blocked", "waiting")]
     blocked_projects = [p for p in active_projects if str(p.get("status")) == "blocked"]
@@ -3346,54 +3422,64 @@ def format_daily_brief(pillar_slug: str, meta: dict[str, Any], projects: list[di
         decision = str(project.get("next_decision") or "").strip()
         title = str(project.get("title") or project.get("project_slug") or "Untitled")
         if decision and decision.lower() not in {"none", "n/a"}:
-            decision_lines.append(f"- **{title}**: {decision}")
+            decision_lines.append(f"- {title}: {decision}")
 
     action_lines = []
     for project in active_projects:
         action = str(project.get("next_action") or "").strip()
         title = str(project.get("title") or project.get("project_slug") or "Untitled")
         if action and action.lower() not in {"none", "n/a"}:
-            action_lines.append(f"- **{title}**: {action}")
+            action_lines.append(f"- {title}: {action}")
 
     action_lines = action_lines[:3]
 
+    # Generate strategic question
+    strategic_question = generate_strategic_question(
+        pillar_slug=pillar_slug,
+        meta=meta,
+        projects=projects,
+        reminders=reminders,
+        now_dt=now_dt,
+    )
+
+    # Build new format
     lines = [
-        f"Qubit Daily Brief | {meta.get('display_name', pillar_slug)}",
+        f"{day_of_week} - {pillar_name} - Daily Brief",
         "",
-        "Decisions Needed:",
+        "🎯 **Decisions Needed:**",
     ]
 
     if decision_lines:
         lines.extend(decision_lines)
     else:
-        lines.append("- None captured. Identify one decision that will unblock progress today.")
+        lines.append("None")
 
-    lines.extend(["", "Due Soon (48h):"])
+    lines.extend(["", "⏰ **Due Soon (48h):**"])
     if due_soon:
         for due_dt, reminder in due_soon[:8]:
-            lines.append(f"- {due_dt.isoformat()}: {reminder.get('message')}")
+            lines.append(f"- {reminder.get('message')} ({due_dt.strftime('%b %d')})")
     else:
-        lines.append("- No pending reminders due in the next 48 hours.")
+        lines.append("None")
 
-    lines.extend(["", "Blocked Projects:"])
+    lines.extend(["", "🚧 **Blocked:**"])
     if blocked_projects:
         for project in blocked_projects:
             title = project.get("title") or project.get("project_slug")
             lines.append(f"- {title}")
     else:
-        lines.append("- No blocked projects detected.")
+        lines.append("None")
 
-    lines.extend(["", "Top 3 Next Actions:"])
+    lines.extend(["", "✅ **Top 3 Actions:**"])
     if action_lines:
         lines.extend(action_lines)
     else:
-        lines.append("- Define the next concrete action for active projects.")
+        lines.append("- Define next concrete action for active projects")
 
     lines.extend(
         [
             "",
-            "Prompt:",
-            "- Which one decision, if made now, will create the most progress today?",
+            "💡 **Strategic Question:**",
+            strategic_question,
         ]
     )
 
