@@ -5082,6 +5082,73 @@ def cmd_send_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cleanup_old_reports(workspace: Path, days_to_keep: int = 7) -> dict[str, Any]:
+    """Clean up reports older than the specified number of days."""
+    from datetime import datetime, timedelta
+    
+    cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+    
+    total_deleted = 0
+    total_freed_bytes = 0
+    pillars_cleaned = []
+    
+    for pillar_dir in list_active_pillars(workspace):
+        pillar_slug = pillar_dir.name
+        reports_dir = pillar_dir / "reports"
+        
+        if not reports_dir.exists():
+            continue
+        
+        pillar_deleted = 0
+        pillar_bytes = 0
+        
+        for report_type in ["nightly", "daily"]:
+            type_dir = reports_dir / report_type
+            if not type_dir.exists():
+                continue
+            
+            for report_file in type_dir.glob("*.md"):
+                # Extract date from filename (YYYY-MM-DD.md)
+                date_str = report_file.stem
+                try:
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                
+                if file_date < cutoff_date:
+                    file_size = report_file.stat().st_size
+                    report_file.unlink()
+                    pillar_deleted += 1
+                    pillar_bytes += file_size
+        
+        if pillar_deleted > 0:
+            pillars_cleaned.append({
+                "pillar_slug": pillar_slug,
+                "files_deleted": pillar_deleted,
+                "bytes_freed": pillar_bytes,
+            })
+            total_deleted += pillar_deleted
+            total_freed_bytes += pillar_bytes
+    
+    return {
+        "status": "ok",
+        "workflow": "cleanup-old-reports",
+        "cutoff_date": cutoff_date.strftime("%Y-%m-%d"),
+        "days_kept": days_to_keep,
+        "total_files_deleted": total_deleted,
+        "total_bytes_freed": total_freed_bytes,
+        "pillars_cleaned": pillars_cleaned,
+    }
+
+
+def cmd_cleanup_reports(args: argparse.Namespace) -> dict[str, Any]:
+    """Clean up old reports (CLI command)."""
+    workspace = Path(args.workspace).resolve()
+    days_to_keep = args.days or 7
+    
+    return cleanup_old_reports(workspace, days_to_keep)
+
+
 def cmd_onboard(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     display_name = args.pillar_name.strip()
@@ -7000,6 +7067,10 @@ def build_parser() -> argparse.ArgumentParser:
     send_report.add_argument("--type", required=True, choices=["nightly", "daily"], help="Report type")
     send_report.add_argument("--date", required=True, help="Date of report (YYYY-MM-DD)")
     send_report.set_defaults(func=cmd_send_report)
+
+    cleanup_reports = subparsers.add_parser("cleanup-reports", help="Clean up old reports (default: keep last 7 days)")
+    cleanup_reports.add_argument("--days", type=int, help="Number of days to keep (default: 7)")
+    cleanup_reports.set_defaults(func=cmd_cleanup_reports)
 
     review_weekly = subparsers.add_parser("review-weekly", help="Run weekly review now and reset cadence")
     review_weekly.add_argument("--pillar", required=True)
