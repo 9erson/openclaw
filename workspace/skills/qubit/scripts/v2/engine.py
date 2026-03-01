@@ -1956,21 +1956,40 @@ def managed_job_id(pillar_slug: str) -> str:
 
 def managed_job_pillar_slug(job: dict[str, Any]) -> str | None:
     job_id = normalize_text(job.get("jobId") or job.get("id"))
+
+    # Handle daily brief jobs
     if job_id.startswith("qubit-daily-brief-"):
         slug = normalize_text(job_id.removeprefix("qubit-daily-brief-"))
         return slug or None
 
+    # Handle nightly audit jobs
+    if job_id.startswith("qubit-nightly-audit-"):
+        slug = normalize_text(job_id.removeprefix("qubit-nightly-audit-"))
+        return slug or None
+
+    # Fallback to description parsing
     description = normalize_text(job.get("description"))
-    if MANAGED_DAILY_BRIEF_DESCRIPTION_TAG not in description:
-        return None
-    match = re.search(r"(?:^|;)pillar=([a-z0-9-]+)(?:;|$)", description)
-    if match:
-        return match.group(1)
+    if MANAGED_DAILY_BRIEF_DESCRIPTION_TAG in description or MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG in description:
+        match = re.search(r"(?:^|;)pillar=([a-z0-9-]+)(?:;|$)", description)
+        if match:
+            return match.group(1)
     return None
 
 
 def is_managed_daily_brief_job(job: dict[str, Any]) -> bool:
-    return managed_job_pillar_slug(job) is not None
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-daily-brief-"):
+        return True
+    description = normalize_text(job.get("description"))
+    return MANAGED_DAILY_BRIEF_DESCRIPTION_TAG in description
+
+
+def is_managed_nightly_audit_job(job: dict[str, Any]) -> bool:
+    job_id = normalize_text(job.get("jobId") or job.get("id"))
+    if job_id.startswith("qubit-nightly-audit-"):
+        return True
+    description = normalize_text(job.get("description"))
+    return MANAGED_NIGHTLY_AUDIT_DESCRIPTION_TAG in description
 
 
 def preserve_runtime_fields(existing: dict[str, Any], new_job: dict[str, Any]) -> dict[str, Any]:
