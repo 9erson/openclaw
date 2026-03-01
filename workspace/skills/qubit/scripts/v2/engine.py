@@ -4749,6 +4749,339 @@ def cmd_audit_channel(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# === REPORT GENERATION FUNCTIONS ===
+
+def get_reports_dir(pillar_dir: Path, report_type: str) -> Path:
+    """Get the reports directory for a pillar and report type."""
+    reports_dir = pillar_dir / "reports" / report_type
+    ensure_dir(reports_dir)
+    return reports_dir
+
+
+def get_report_metadata_path(pillar_dir: Path) -> Path:
+    """Get the path to the report metadata file."""
+    return pillar_dir / "report-metadata.json"
+
+
+def load_report_metadata(pillar_dir: Path) -> dict[str, Any]:
+    """Load report metadata for a pillar."""
+    metadata_path = get_report_metadata_path(pillar_dir)
+    if not metadata_path.exists():
+        return {"nightly": {}, "daily": {}}
+    return load_json(metadata_path, {"nightly": {}, "daily": {}})
+
+
+def save_report_metadata(pillar_dir: Path, metadata: dict[str, Any]) -> None:
+    """Save report metadata for a pillar."""
+    metadata_path = get_report_metadata_path(pillar_dir)
+    save_json(metadata_path, metadata)
+
+
+def update_report_metadata_entry(
+    pillar_dir: Path,
+    report_type: str,
+    date: str,
+    **updates: Any,
+) -> None:
+    """Update a specific report metadata entry."""
+    metadata = load_report_metadata(pillar_dir)
+    if report_type not in metadata:
+        metadata[report_type] = {}
+    if date not in metadata[report_type]:
+        metadata[report_type][date] = {}
+    metadata[report_type][date].update(updates)
+    save_report_metadata(pillar_dir, metadata)
+
+
+def generate_nightly_report_file(
+    workspace: Path,
+    pillar_slug: str,
+    date: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Generate a nightly report file for a pillar."""
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    
+    # Harvest messages
+    messages = harvest_channel_messages(workspace, pillar_slug, date)
+    
+    # Analyze messages
+    analysis = analyze_messages(messages, pillar_slug)
+    
+    # Detect gaps
+    gaps = detect_gaps(workspace, pillar_slug, analysis, date)
+    
+    # Update daily note
+    note_file = update_daily_note_with_audit(workspace, pillar_slug, date, analysis, gaps)
+    
+    # Generate report content
+    report_content = generate_audit_report(pillar_slug, date, analysis, gaps)
+    
+    # Save report file
+    reports_dir = get_reports_dir(pillar_dir, "nightly")
+    report_file = reports_dir / f"{date}.md"
+    
+    # Add metadata header
+    full_content = (
+        f"# Nightly Report | {meta.get('display_name', pillar_slug)} | {date}\n\n"
+        f"**Generated:** {now_iso(tz_name)}\n"
+        f"**Messages Analyzed:** {len(messages)}\n"
+        f"**Gaps Detected:** {len(gaps)}\n\n"
+        f"---\n\n"
+        f"{report_content}"
+    )
+    
+    report_file.write_text(full_content, encoding="utf-8")
+    
+    # Update metadata
+    now_ts = now_iso(tz_name)
+    update_report_metadata_entry(
+        pillar_dir,
+        "nightly",
+        date,
+        generated_at=now_ts,
+        ready_at=now_ts,
+        sent_at=None,
+        attempts=0,
+        last_error=None,
+        report_path=str(report_file),
+        message_count=len(messages),
+        gaps_count=len(gaps),
+    )
+    
+    analysis_data = {
+        "message_count": len(messages),
+        "gaps_detected": len(gaps),
+        "daily_note": str(note_file),
+    }
+    
+    return report_file, analysis_data
+
+
+def generate_daily_brief_file(
+    workspace: Path,
+    pillar_slug: str,
+    date: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Generate a daily brief file for a pillar."""
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+    
+    # Load pillar data
+    projects = read_projects(pillar_dir)
+    reminders = read_reminders(pillar_dir / "reminders.jsonl")
+    
+    # Generate brief content using existing format_daily_brief logic
+    brief_content = format_daily_brief(pillar_slug, meta, projects, reminders)
+    
+    # Save brief file
+    reports_dir = get_reports_dir(pillar_dir, "daily")
+    brief_file = reports_dir / f"{date}.md"
+    
+    # Add metadata header
+    full_content = (
+        f"# Daily Brief | {meta.get('display_name', pillar_slug)} | {date}\n\n"
+        f"**Generated:** {now_iso(tz_name)}\n\n"
+        f"---\n\n"
+        f"{brief_content}"
+    )
+    
+    brief_file.write_text(full_content, encoding="utf-8")
+    
+    # Update metadata
+    now_ts = now_iso(tz_name)
+    update_report_metadata_entry(
+        pillar_dir,
+        "daily",
+        date,
+        generated_at=now_ts,
+        ready_at=now_ts,
+        sent_at=None,
+        attempts=0,
+        last_error=None,
+        report_path=str(brief_file),
+    )
+    
+    brief_data = {
+        "pillar_slug": pillar_slug,
+        "date": date,
+    }
+    
+    return brief_file, brief_data
+
+
+def send_report_to_discord(
+    workspace: Path,
+    pillar_slug: str,
+    report_type: str,
+    date: str,
+) -> dict[str, Any]:
+    """Send a report to Discord with retry logic."""
+    import subprocess
+    import time
+    
+    pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+    channel_id = str(meta.get("discord_channel_id") or "")
+    
+    if not channel_id:
+        raise QubitError(f"No Discord channel ID for pillar '{pillar_slug}'")
+    
+    # Load report file
+    reports_dir = get_reports_dir(pillar_dir, report_type)
+    report_file = reports_dir / f"{date}.md"
+    
+    if not report_file.exists():
+        raise QubitError(f"Report file not found: {report_file}")
+    
+    report_content = report_file.read_text(encoding="utf-8")
+    
+    # Extract just the report part (after metadata header)
+    lines = report_content.split("\n")
+    report_start = 0
+    for i, line in enumerate(lines):
+        if line.strip() == "---":
+            report_start = i + 1
+            break
+    
+    report_text = "\n".join(lines[report_start:]).strip()
+    
+    # Send to Discord with retry logic
+    max_attempts = 3
+    last_error = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            cmd = [
+                "openclaw", "message", "send",
+                "--channel", "discord",
+                "--target", f"channel:{channel_id}",
+                "--message", report_text,
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            
+            # Success - update metadata
+            now_ts = now_iso(str(meta.get("timezone") or DEFAULT_TIMEZONE))
+            update_report_metadata_entry(
+                pillar_dir,
+                report_type,
+                date,
+                sent_at=now_ts,
+                attempts=attempt,
+            )
+            
+            return {
+                "status": "ok",
+                "action": "sent",
+                "pillar_slug": pillar_slug,
+                "report_type": report_type,
+                "date": date,
+                "channel_id": channel_id,
+                "attempts": attempt,
+            }
+            
+        except Exception as e:
+            last_error = str(e)
+            
+            # Update attempt count
+            update_report_metadata_entry(
+                pillar_dir,
+                report_type,
+                date,
+                attempts=attempt,
+                last_error=last_error,
+            )
+            
+            # Retry with exponential backoff (unless last attempt)
+            if attempt < max_attempts:
+                time.sleep(2 ** attempt)  # 2s, 4s, 8s
+    
+    # All retries failed
+    return {
+        "status": "error",
+        "action": "failed",
+        "pillar_slug": pillar_slug,
+        "report_type": report_type,
+        "date": date,
+        "channel_id": channel_id,
+        "attempts": max_attempts,
+        "error": last_error,
+    }
+
+
+def cmd_generate_nightly_report(args: argparse.Namespace) -> dict[str, Any]:
+    """Generate a nightly report file (without sending)."""
+    workspace = Path(args.workspace).resolve()
+    pillar_slug = slugify(args.pillar)
+    
+    # Determine date (default to yesterday)
+    if args.date:
+        date = args.date
+    else:
+        pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+        tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+        now_local = now_in_tz(tz_name)
+        yesterday = now_local - timedelta(days=1)
+        date = yesterday.strftime("%Y-%m-%d")
+    
+    # Generate report
+    report_file, analysis = generate_nightly_report_file(workspace, pillar_slug, date)
+    
+    return {
+        "status": "ok",
+        "workflow": "generate-nightly-report",
+        "pillar_slug": pillar_slug,
+        "date": date,
+        "report_file": str(report_file),
+        **analysis,
+    }
+
+
+def cmd_generate_daily_brief(args: argparse.Namespace) -> dict[str, Any]:
+    """Generate a daily brief file (without sending)."""
+    workspace = Path(args.workspace).resolve()
+    pillar_slug = slugify(args.pillar)
+    
+    # Determine date (default to today)
+    if args.date:
+        date = args.date
+    else:
+        pillar_dir, meta = get_or_create_pillar_by_slug(workspace, pillar_slug)
+        tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+        now_local = now_in_tz(tz_name)
+        date = now_local.strftime("%Y-%m-%d")
+    
+    # Generate brief
+    brief_file, brief_data = generate_daily_brief_file(workspace, pillar_slug, date)
+    
+    return {
+        "status": "ok",
+        "workflow": "generate-daily-brief",
+        "pillar_slug": pillar_slug,
+        "date": date,
+        "brief_file": str(brief_file),
+        **brief_data,
+    }
+
+
+def cmd_send_report(args: argparse.Namespace) -> dict[str, Any]:
+    """Send a generated report to Discord."""
+    workspace = Path(args.workspace).resolve()
+    pillar_slug = slugify(args.pillar)
+    report_type = args.type  # "nightly" or "daily"
+    date = args.date
+    
+    if report_type not in ("nightly", "daily"):
+        raise QubitError(f"Invalid report type '{report_type}'; expected 'nightly' or 'daily'")
+    
+    result = send_report_to_discord(workspace, pillar_slug, report_type, date)
+    
+    return {
+        **result,
+        "workflow": "send-report",
+    }
+
+
 def cmd_onboard(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     display_name = args.pillar_name.strip()
@@ -6577,6 +6910,22 @@ def build_parser() -> argparse.ArgumentParser:
     audit_channel.add_argument("--pillar", required=True)
     audit_channel.add_argument("--date", help="Date to audit (YYYY-MM-DD), default: yesterday")
     audit_channel.set_defaults(func=cmd_audit_channel)
+
+    generate_nightly = subparsers.add_parser("generate-nightly-report", help="Generate nightly report file (without sending)")
+    generate_nightly.add_argument("--pillar", required=True)
+    generate_nightly.add_argument("--date", help="Date for report (YYYY-MM-DD), default: yesterday")
+    generate_nightly.set_defaults(func=cmd_generate_nightly_report)
+
+    generate_daily = subparsers.add_parser("generate-daily-brief", help="Generate daily brief file (without sending)")
+    generate_daily.add_argument("--pillar", required=True)
+    generate_daily.add_argument("--date", help="Date for brief (YYYY-MM-DD), default: today")
+    generate_daily.set_defaults(func=cmd_generate_daily_brief)
+
+    send_report = subparsers.add_parser("send-report", help="Send a generated report to Discord")
+    send_report.add_argument("--pillar", required=True)
+    send_report.add_argument("--type", required=True, choices=["nightly", "daily"], help="Report type")
+    send_report.add_argument("--date", required=True, help="Date of report (YYYY-MM-DD)")
+    send_report.set_defaults(func=cmd_send_report)
 
     review_weekly = subparsers.add_parser("review-weekly", help="Run weekly review now and reset cadence")
     review_weekly.add_argument("--pillar", required=True)
