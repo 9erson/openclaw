@@ -97,6 +97,13 @@ CQ_RHETORIC_CUE_PATTERN = re.compile(
 CQ_TERM_HINT_PATTERN = re.compile(
     r"(?:`([^`]{2,40})`|\"([^\"]{2,40})\"|'([^']{2,40})')"
 )
+# === MESSAGE QUEUE (Phase 1) ===
+QUEUE_KINDS = ("reminder", "copy_ready_message")
+QUEUE_STATUSES = ("queued", "sent", "failed", "canceled")
+QUEUE_DEFAULT_MAX_ATTEMPTS = 3
+QUEUE_RETRY_BACKOFF_MINUTES = [1, 2, 5]  # Exponential backoff: 1m, 2m, 5m
+QUEUE_STORE_FILENAME = "message-queue.jsonl"
+
 CQ_STOPWORDS = {
     "about",
     "after",
@@ -341,6 +348,52 @@ def parse_iso(value: str, fallback_tz: str = DEFAULT_TIMEZONE) -> datetime:
     return parsed
 
 
+def parse_strict_ist_datetime(value: str) -> tuple[datetime, datetime]:
+    """
+    Parse strict IST datetime format: YYYY-MM-DD HH:MM
+    Returns tuple of (ist_datetime, utc_datetime)
+    Raises QubitError for invalid/fuzzy input
+    """
+    # Strict pattern: YYYY-MM-DD HH:MM
+    pattern = r'^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$'
+    match = re.match(pattern, value.strip())
+    
+    if not match:
+        raise QubitError(
+            f"Invalid time format: '{value}'. "
+            f"Expected strict format: YYYY-MM-DD HH:MM (e.g., 2026-03-15 14:30)"
+        )
+    
+    year, month, day, hour, minute = match.groups()
+    
+    try:
+        # Create IST datetime
+        ist_tz = ZoneInfo("Asia/Kolkata")
+        ist_dt = datetime(
+            int(year), int(month), int(day), 
+            int(hour), int(minute), 0, 
+            tzinfo=ist_tz
+        )
+        
+        # Convert to UTC
+        utc_dt = ist_dt.astimezone(ZoneInfo("UTC"))
+        
+        return ist_dt, utc_dt
+        
+    except ValueError as e:
+        raise QubitError(f"Invalid date/time values: {e}")
+
+
+def format_ist_utc_pair(ist_dt: datetime, utc_dt: datetime) -> dict[str, str]:
+    """Format IST and UTC datetime pair for output"""
+    return {
+        "ist": ist_dt.strftime("%Y-%m-%d %H:%M"),
+        "utc": utc_dt.strftime("%Y-%m-%d %H:%M"),
+        "ist_iso": ist_dt.isoformat(),
+        "utc_iso": utc_dt.isoformat(),
+    }
+
+
 def dump_frontmatter(frontmatter: dict[str, Any]) -> str:
     return yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
 
@@ -377,6 +430,99 @@ def load_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_json(path: Path, data: Any) -> None:
+    ensure_dir(path.parent)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# === MESSAGE QUEUE OPERATIONS (Phase 1) ===
+def queue_store_path(workspace: Path) -> Path:
+    """Get the message queue JSONL file path"""
+    return workspace / "qubit" / "meta" / QUEUE_STORE_FILENAME
+
+
+def read_queue_items(workspace: Path) -> list[dict[str, Any]]:
+    """Read all items from the message queue JSONL file"""
+    path = queue_store_path(workspace)
+    if not path.exists():
+        return []
+    
+    items = []
+    for line in path.read_text(encoding="utf-8").strip().split("\n"):
+        if line.strip():
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                # Log but don't fail - skip malformed lines
+                print(f"Warning: Skipping malformed queue line: {e}")
+    
+    return items
+
+
+def write_queue_items(workspace: Path, items: list[dict[str, Any]]) -> None:
+    """Write all items to the message queue JSONL file (atomic overwrite)"""
+    path = queue_store_path(workspace)
+    ensure_dir(path.parent)
+    
+    lines = [json.dumps(item, ensure_ascii=False) for item in items]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def generate_queue_id() -> str:
+    """Generate a unique queue item ID"""
+    return f"qmsg_{uuid.uuid4().hex[:12]}"
+
+
+def create_queue_item(
+    kind: str,
+    pillar_slug: str,
+    channel_id: str,
+    due_at_ist: datetime,
+    due_at_utc: datetime,
+    payload: dict[str, Any],
+    max_attempts: int = QUEUE_DEFAULT_MAX_ATTEMPTS,
+) -> dict[str, Any]:
+    """Create a new queue item with all required fields"""
+    now_ist = now_in_tz("Asia/Kolkata")
+    now_utc = now_in_tz("UTC")
+    
+    return {
+        "id": generate_queue_id(),
+        "kind": kind,
+        "pillar_slug": pillar_slug,
+        "channel_id": channel_id,
+        "status": "queued",
+        "due_at_ist": due_at_ist.strftime("%Y-%m-%d %H:%M"),
+        "due_at_utc": due_at_utc.strftime("%Y-%m-%d %H:%M"),
+        "source_tz": "Asia/Kolkata",
+        "created_at_ist": now_ist.strftime("%Y-%m-%d %H:%M"),
+        "created_at_utc": now_utc.strftime("%Y-%m-%d %H:%M"),
+        "updated_at_ist": now_ist.strftime("%Y-%m-%d %H:%M"),
+        "updated_at_utc": now_utc.strftime("%Y-%m-%d %H:%M"),
+        "attempt_count": 0,
+        "max_attempts": max_attempts,
+        "next_retry_at_utc": None,
+        "last_error": None,
+        "payload": payload,
+    }
+
+
+def update_queue_item(
+    item: dict[str, Any],
+    **updates: Any,
+) -> dict[str, Any]:
+    """Update a queue item with automatic timestamp updates"""
+    now_ist = now_in_tz("Asia/Kolkata")
+    now_utc = now_in_tz("UTC")
+    
+    updated = dict(item)
+    updated.update(updates)
+    updated["updated_at_ist"] = now_ist.strftime("%Y-%m-%d %H:%M")
+    updated["updated_at_utc"] = now_utc.strftime("%Y-%m-%d %H:%M")
+    
+    return updated
 
 
 def save_json(path: Path, data: Any) -> None:
@@ -6090,6 +6236,288 @@ def cmd_stage_message_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# === MESSAGE QUEUE COMMANDS (Phase 1) ===
+def cmd_queue_message_create(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Create a new queue item
+    Required: --kind, --pillar, --channel-id, --due-at
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    # Validate kind
+    kind = normalize_text(args.kind)
+    if kind not in QUEUE_KINDS:
+        raise QubitError(
+            f"Invalid kind '{kind}'. Must be one of: {', '.join(QUEUE_KINDS)}"
+        )
+    
+    # Validate pillar
+    pillar_slug = normalize_text(args.pillar)
+    if not pillar_slug:
+        raise QubitError("--pillar is required")
+    
+    pillar_dir = workspace / "pillars" / "active" / pillar_slug
+    if not pillar_dir.exists():
+        raise QubitError(f"Pillar not found: {pillar_slug}")
+    
+    # Validate channel_id
+    channel_id = normalize_text(args.channel_id)
+    if not channel_id:
+        raise QubitError("--channel-id is required")
+    
+    # Parse and validate due_at (strict IST format)
+    due_at_input = normalize_text(args.due_at)
+    if not due_at_input:
+        raise QubitError("--due-at is required (format: YYYY-MM-DD HH:MM)")
+    
+    due_at_ist, due_at_utc = parse_strict_ist_datetime(due_at_input)
+    
+    # Optional max_attempts
+    max_attempts = args.max_attempts if hasattr(args, 'max_attempts') else QUEUE_DEFAULT_MAX_ATTEMPTS
+    if max_attempts < 1 or max_attempts > 10:
+        raise QubitError("max_attempts must be between 1 and 10")
+    
+    # Build payload from optional fields
+    payload = {}
+    if args.message:
+        payload["message"] = args.message
+    if args.subject:
+        payload["subject"] = args.subject
+    
+    # Create queue item
+    item = create_queue_item(
+        kind=kind,
+        pillar_slug=pillar_slug,
+        channel_id=channel_id,
+        due_at_ist=due_at_ist,
+        due_at_utc=due_at_utc,
+        payload=payload,
+        max_attempts=max_attempts,
+    )
+    
+    # Add to queue
+    items = read_queue_items(workspace)
+    items.append(item)
+    write_queue_items(workspace, items)
+    
+    # Format response with both IST and UTC
+    timestamps = format_ist_utc_pair(due_at_ist, due_at_utc)
+    
+    return {
+        "status": "ok",
+        "workflow": "queue-message-create",
+        "item": {
+            "id": item["id"],
+            "kind": item["kind"],
+            "pillar_slug": item["pillar_slug"],
+            "channel_id": item["channel_id"],
+            "status": item["status"],
+            "due_at": timestamps,
+            "max_attempts": item["max_attempts"],
+        },
+        "message": f"Created queue item {item['id']} for pillar {pillar_slug}",
+    }
+
+
+def cmd_queue_message_list(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    List queue items with optional filters
+    Optional: --kind, --pillar, --status, --channel-id
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    items = read_queue_items(workspace)
+    
+    # Apply filters
+    if args.kind:
+        kind = normalize_text(args.kind)
+        if kind not in QUEUE_KINDS:
+            raise QubitError(f"Invalid kind '{kind}'. Must be one of: {', '.join(QUEUE_KINDS)}")
+        items = [i for i in items if i.get("kind") == kind]
+    
+    if args.pillar:
+        pillar_slug = normalize_text(args.pillar)
+        items = [i for i in items if i.get("pillar_slug") == pillar_slug]
+    
+    if args.status:
+        status = normalize_text(args.status)
+        if status not in QUEUE_STATUSES:
+            raise QubitError(f"Invalid status '{status}'. Must be one of: {', '.join(QUEUE_STATUSES)}")
+        items = [i for i in items if i.get("status") == status]
+    
+    if args.channel_id:
+        channel_id = normalize_text(args.channel_id)
+        items = [i for i in items if i.get("channel_id") == channel_id]
+    
+    # Format response with both IST and UTC timestamps
+    formatted_items = []
+    for item in items:
+        due_ist = datetime.strptime(item["due_at_ist"], "%Y-%m-%d %H:%M")
+        due_ist = due_ist.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        due_utc = datetime.strptime(item["due_at_utc"], "%Y-%m-%d %H:%M")
+        due_utc = due_utc.replace(tzinfo=ZoneInfo("UTC"))
+        
+        timestamps = format_ist_utc_pair(due_ist, due_utc)
+        
+        formatted_items.append({
+            "id": item["id"],
+            "kind": item["kind"],
+            "pillar_slug": item["pillar_slug"],
+            "channel_id": item["channel_id"],
+            "status": item["status"],
+            "due_at": timestamps,
+            "attempt_count": item.get("attempt_count", 0),
+            "max_attempts": item.get("max_attempts", QUEUE_DEFAULT_MAX_ATTEMPTS),
+        })
+    
+    return {
+        "status": "ok",
+        "workflow": "queue-message-list",
+        "count": len(formatted_items),
+        "items": formatted_items,
+    }
+
+
+def cmd_queue_message_edit(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Edit a queue item
+    Required: --id
+    Optional: --due-at, --channel-id, --status, --message, --subject
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    # Validate ID
+    item_id = normalize_text(args.id)
+    if not item_id:
+        raise QubitError("--id is required")
+    
+    # Find item
+    items = read_queue_items(workspace)
+    item_index = -1
+    for i, item in enumerate(items):
+        if item.get("id") == item_id:
+            item_index = i
+            break
+    
+    if item_index < 0:
+        raise QubitError(f"Queue item not found: {item_id}")
+    
+    item = items[item_index]
+    
+    # Prepare updates
+    updates = {}
+    
+    # Update due_at if provided
+    if args.due_at:
+        due_at_input = normalize_text(args.due_at)
+        due_at_ist, due_at_utc = parse_strict_ist_datetime(due_at_input)
+        updates["due_at_ist"] = due_at_ist.strftime("%Y-%m-%d %H:%M")
+        updates["due_at_utc"] = due_at_utc.strftime("%Y-%m-%d %H:%M")
+    
+    # Update channel_id if provided
+    if args.channel_id:
+        channel_id = normalize_text(args.channel_id)
+        if not channel_id:
+            raise QubitError("--channel-id cannot be empty")
+        updates["channel_id"] = channel_id
+    
+    # Update status if provided
+    if args.status:
+        status = normalize_text(args.status)
+        if status not in QUEUE_STATUSES:
+            raise QubitError(f"Invalid status '{status}'. Must be one of: {', '.join(QUEUE_STATUSES)}")
+        updates["status"] = status
+    
+    # Update payload if message/subject provided
+    payload = dict(item.get("payload", {}))
+    if args.message is not None:
+        payload["message"] = args.message
+    if args.subject is not None:
+        payload["subject"] = args.subject
+    if payload:
+        updates["payload"] = payload
+    
+    # Apply updates
+    updated_item = update_queue_item(item, **updates)
+    items[item_index] = updated_item
+    write_queue_items(workspace, items)
+    
+    # Format response
+    due_ist = datetime.strptime(updated_item["due_at_ist"], "%Y-%m-%d %H:%M")
+    due_ist = due_ist.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+    due_utc = datetime.strptime(updated_item["due_at_utc"], "%Y-%m-%d %H:%M")
+    due_utc = due_utc.replace(tzinfo=ZoneInfo("UTC"))
+    
+    timestamps = format_ist_utc_pair(due_ist, due_utc)
+    
+    return {
+        "status": "ok",
+        "workflow": "queue-message-edit",
+        "item": {
+            "id": updated_item["id"],
+            "kind": updated_item["kind"],
+            "pillar_slug": updated_item["pillar_slug"],
+            "channel_id": updated_item["channel_id"],
+            "status": updated_item["status"],
+            "due_at": timestamps,
+            "attempt_count": updated_item.get("attempt_count", 0),
+            "max_attempts": updated_item.get("max_attempts", QUEUE_DEFAULT_MAX_ATTEMPTS),
+        },
+        "message": f"Updated queue item {item_id}",
+    }
+
+
+def cmd_queue_message_cancel(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Cancel a queue item (set status to 'canceled')
+    Required: --id
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    # Validate ID
+    item_id = normalize_text(args.id)
+    if not item_id:
+        raise QubitError("--id is required")
+    
+    # Find item
+    items = read_queue_items(workspace)
+    item_index = -1
+    for i, item in enumerate(items):
+        if item.get("id") == item_id:
+            item_index = i
+            break
+    
+    if item_index < 0:
+        raise QubitError(f"Queue item not found: {item_id}")
+    
+    item = items[item_index]
+    
+    # Check if already terminal
+    current_status = item.get("status")
+    if current_status in ("sent", "canceled"):
+        return {
+            "status": "ok",
+            "workflow": "queue-message-cancel",
+            "item_id": item_id,
+            "action": "already_terminal",
+            "current_status": current_status,
+            "message": f"Queue item {item_id} already has terminal status: {current_status}",
+        }
+    
+    # Cancel the item
+    updated_item = update_queue_item(item, status="canceled")
+    items[item_index] = updated_item
+    write_queue_items(workspace, items)
+    
+    return {
+        "status": "ok",
+        "workflow": "queue-message-cancel",
+        "item_id": item_id,
+        "action": "canceled",
+        "message": f"Canceled queue item {item_id}",
+    }
+
+
 def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     mode = "check" if bool(args.check) else "apply"
@@ -7575,6 +8003,38 @@ def build_parser() -> argparse.ArgumentParser:
     stage_dispatch.add_argument("--stage-id", required=True)
     stage_dispatch.add_argument("--now", help="ISO datetime override")
     stage_dispatch.set_defaults(func=cmd_stage_message_dispatch)
+
+    # === MESSAGE QUEUE COMMANDS (Phase 1) ===
+    queue_create = subparsers.add_parser("queue-message-create", help="Create a new message queue item")
+    queue_create.add_argument("--kind", required=True, help=f"Message kind: {', '.join(QUEUE_KINDS)}")
+    queue_create.add_argument("--pillar", required=True, help="Pillar slug")
+    queue_create.add_argument("--channel-id", required=True, help="Discord channel ID")
+    queue_create.add_argument("--due-at", required=True, help="Due time in IST (format: YYYY-MM-DD HH:MM)")
+    queue_create.add_argument("--message", help="Message content (optional)")
+    queue_create.add_argument("--subject", help="Subject line (optional)")
+    queue_create.add_argument("--max-attempts", type=int, default=QUEUE_DEFAULT_MAX_ATTEMPTS, 
+                               help=f"Max retry attempts (default: {QUEUE_DEFAULT_MAX_ATTEMPTS})")
+    queue_create.set_defaults(func=cmd_queue_message_create)
+
+    queue_list = subparsers.add_parser("queue-message-list", help="List message queue items with optional filters")
+    queue_list.add_argument("--kind", help=f"Filter by kind: {', '.join(QUEUE_KINDS)}")
+    queue_list.add_argument("--pillar", help="Filter by pillar slug")
+    queue_list.add_argument("--status", help=f"Filter by status: {', '.join(QUEUE_STATUSES)}")
+    queue_list.add_argument("--channel-id", help="Filter by channel ID")
+    queue_list.set_defaults(func=cmd_queue_message_list)
+
+    queue_edit = subparsers.add_parser("queue-message-edit", help="Edit a message queue item")
+    queue_edit.add_argument("--id", required=True, help="Queue item ID")
+    queue_edit.add_argument("--due-at", help="Update due time (format: YYYY-MM-DD HH:MM)")
+    queue_edit.add_argument("--channel-id", help="Update channel ID")
+    queue_edit.add_argument("--status", help=f"Update status: {', '.join(QUEUE_STATUSES)}")
+    queue_edit.add_argument("--message", help="Update message content")
+    queue_edit.add_argument("--subject", help="Update subject line")
+    queue_edit.set_defaults(func=cmd_queue_message_edit)
+
+    queue_cancel = subparsers.add_parser("queue-message-cancel", help="Cancel a message queue item")
+    queue_cancel.add_argument("--id", required=True, help="Queue item ID")
+    queue_cancel.set_defaults(func=cmd_queue_message_cancel)
 
     sync_cron = subparsers.add_parser("sync-cron", help="Ensure daily brief cron entry for a pillar")
     sync_cron.add_argument("--pillar", required=True)
