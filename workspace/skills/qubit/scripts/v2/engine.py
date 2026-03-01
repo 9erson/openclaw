@@ -537,6 +537,123 @@ def get_due_queue_items(workspace: Path, now_utc: datetime) -> list[dict[str, An
     return due_items
 
 
+def migrate_legacy_to_queue(workspace: Path) -> dict[str, Any]:
+    """Migrate pending reminders and staged messages to queue (Phase 5)"""
+    migrated_reminders = 0
+    staged_messages = 0
+    errors = []
+    
+    # Create legacy archive directory
+    legacy_dir = workspace / "qubit" / "meta" / "legacy"
+    ensure_dir(legacy_dir)
+    
+    # Migrate reminders from all pillars
+    for pillar_dir in list_active_pillars(workspace):
+        meta, body = load_pillar_meta(pillar_dir)
+        pillar_slug = str(meta.get("pillar_slug") or pillar_dir.name)
+        channel_id = str(meta.get("discord_channel_id") or "")
+        tz_name = str(meta.get("timezone") or DEFAULT_TIMEZONE)
+        
+        # Migrate reminders
+        reminders_file = pillar_dir / "reminders.jsonl"
+        if reminders_file.exists():
+            reminders = read_reminders(reminders_file)
+            for reminder in reminders:
+                if str(reminder.get("status")) != "pending":
+                    continue
+                
+                try:
+                    # Parse due_at (could be ISO format or YYYY-MM-DD HH:MM)
+                    due_at_str = str(reminder.get("due_at"))
+                    try:
+                        # Try strict IST format first
+                        due_at_ist, due_at_utc = parse_strict_ist_datetime(due_at_str)
+                    except QubitError:
+                        # Try ISO format
+                        due_dt = parse_iso(due_at_str, fallback_tz=tz_name)
+                        due_at_ist = due_dt.astimezone(ZoneInfo("Asia/Kolkata"))
+                        due_at_utc = due_dt.astimezone(ZoneInfo("UTC"))
+                    
+                    # Create queue item
+                    queue_item = create_queue_item(
+                        kind="reminder",
+                        pillar_slug=pillar_slug,
+                        channel_id=channel_id,
+                        due_at_ist=due_at_ist,
+                        due_at_utc=due_at_utc,
+                        payload={
+                            "message": reminder.get("message"),
+                            "project_slug": reminder.get("project_slug"),
+                            "legacy_id": reminder.get("id"),
+                        },
+                    )
+                    
+                    # Add to queue
+                    items = read_queue_items(workspace)
+                    items.append(queue_item)
+                    write_queue_items(workspace, items)
+                    
+                    migrated_reminders += 1
+                    
+                except Exception as e:
+                    errors.append(f"Failed to migrate reminder {reminder.get('id')}: {e}")
+            
+            # Archive legacy file
+            if reminders:
+                archive_path = legacy_dir / f"{pillar_slug}-reminders.jsonl"
+                reminders_file.rename(archive_path)
+        
+        # Migrate staged messages
+        staged_file = staged_messages_path(pillar_dir)
+        if staged_file.exists():
+            stage_rows = read_staged_messages(staged_file)
+            for stage_row in stage_rows:
+                if normalize_text(stage_row.get("status")).lower() != "scheduled":
+                    continue
+                
+                try:
+                    # Parse due_at
+                    due_at_str = str(stage_row.get("due_at"))
+                    due_dt = parse_iso(due_at_str, fallback_tz=tz_name)
+                    due_at_ist = due_dt.astimezone(ZoneInfo("Asia/Kolkata"))
+                    due_at_utc = due_dt.astimezone(ZoneInfo("UTC"))
+                    
+                    # Create queue item
+                    queue_item = create_queue_item(
+                        kind="copy_ready_message",
+                        pillar_slug=pillar_slug,
+                        channel_id=channel_id,
+                        due_at_ist=due_at_ist,
+                        due_at_utc=due_at_utc,
+                        payload={
+                            "message": stage_row.get("message_body"),
+                            "legacy_id": stage_row.get("id"),
+                        },
+                    )
+                    
+                    # Add to queue
+                    items = read_queue_items(workspace)
+                    items.append(queue_item)
+                    write_queue_items(workspace, items)
+                    
+                    staged_messages += 1
+                    
+                except Exception as e:
+                    errors.append(f"Failed to migrate staged message {stage_row.get('id')}: {e}")
+            
+            # Archive legacy file
+            if stage_rows:
+                archive_path = legacy_dir / f"{pillar_slug}-staged-messages.jsonl"
+                staged_file.rename(archive_path)
+    
+    return {
+        "migrated_reminders": migrated_reminders,
+        "migrated_staged_messages": staged_messages,
+        "errors": errors,
+        "legacy_archive_dir": str(legacy_dir),
+    }
+
+
 def write_queue_items(workspace: Path, items: list[dict[str, Any]]) -> None:
     """Write all items to the message queue JSONL file (atomic overwrite)"""
     path = queue_store_path(workspace)
@@ -601,8 +718,52 @@ def update_queue_item(
     return updated
 
 
+def write_queue_items(workspace: Path, items: list[dict[str, Any]]) -> None:
+    """Write all items to the message queue JSONL file (atomic overwrite)"""
+    path = queue_store_path(workspace)
+    ensure_dir(path.parent)
+    
+    lines = [json.dumps(item, ensure_ascii=False) for item in items]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_queue_items(workspace: Path) -> list[dict[str, Any]]:
+    """Read all items from the message queue JSONL file"""
+    path = queue_store_path(workspace)
+    if not path.exists():
+        return []
+    
+    items = []
+    for line in path.read_text(encoding="utf-8").strip().split("\n"):
+        if line.strip():
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                # Log but don't fail - skip malformed lines
+                print(f"Warning: Skipping malformed queue line: {e}")
+    
+    return items
+
+
+def update_queue_item(
+    item: dict[str, Any],
+    **updates: Any,
+) -> dict[str, Any]:
+    """Update a queue item with automatic timestamp updates"""
+    now_ist = now_in_tz("Asia/Kolkata")
+    now_utc = now_in_tz("UTC")
+    
+    updated = dict(item)
+    updated.update(updates)
+    updated["updated_at_ist"] = now_ist.strftime("%Y-%m-%d %H:%M")
+    updated["updated_at_utc"] = now_utc.strftime("%Y-%m-%d %H:%M")
+    
+    return updated
+
+
 def save_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    ensure_dir(path.parent)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def ensure_dir(path: Path) -> None:
@@ -6633,6 +6794,22 @@ def cmd_queue_message_cancel(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_migrate_legacy(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Migrate legacy reminders and staged messages to queue (Phase 5)
+    """
+    workspace = Path(args.workspace).resolve()
+    
+    result = migrate_legacy_to_queue(workspace)
+    
+    return {
+        "status": "ok",
+        "workflow": "migrate-legacy",
+        **result,
+        "message": f"Migrated {result['migrated_reminders']} reminders and {result['migrated_staged_messages']} staged messages to queue",
+    }
+
+
 def cmd_queue_message_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     """
     Dispatch due queue items (Phase 2)
@@ -8515,6 +8692,9 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cancel = subparsers.add_parser("queue-message-cancel", help="Cancel a message queue item")
     queue_cancel.add_argument("--id", required=True, help="Queue item ID")
     queue_cancel.set_defaults(func=cmd_queue_message_cancel)
+
+    migrate_legacy = subparsers.add_parser("migrate-legacy", help="Migrate legacy reminders/staged messages to queue")
+    migrate_legacy.set_defaults(func=cmd_migrate_legacy)
 
     queue_dispatch = subparsers.add_parser("queue-message-dispatch", help="Dispatch due queue items to Discord")
     queue_dispatch.add_argument("--limit", type=int, default=10, help="Max items to dispatch (default: 10)")
