@@ -461,6 +461,82 @@ def read_queue_items(workspace: Path) -> list[dict[str, Any]]:
     return items
 
 
+def get_due_queue_items(workspace: Path, now_utc: datetime) -> list[dict[str, Any]]:
+    """Get queue items that are due (queued or retryable failed)"""
+    items = read_queue_items(workspace)
+    
+    due_items = []
+    for item in items:
+        status = item.get("status")
+        
+        # Skip terminal statuses
+        if status in ("sent", "canceled"):
+            continue
+        
+        # Check if due
+        if status == "queued":
+            due_at_utc_str = item.get("due_at_utc")
+            if due_at_utc_str:
+                try:
+                    due_at_utc = datetime.strptime(due_at_utc_str, "%Y-%m-%d %H:%M")
+                    due_at_utc = due_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if due_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    continue
+        
+        elif status == "failed":
+            next_retry_at_utc_str = item.get("next_retry_at_utc")
+            if next_retry_at_utc_str:
+                try:
+                    next_retry_at_utc = datetime.strptime(next_retry_at_utc_str, "%Y-%m-%d %H:%M")
+                    next_retry_at_utc = next_retry_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if next_retry_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    continue
+    
+    return due_items
+
+
+def get_due_queue_items(workspace: Path, now_utc: datetime) -> list[dict[str, Any]]:
+    """Get queue items that are due (queued or retryable failed)"""
+    items = read_queue_items(workspace)
+    
+    due_items = []
+    for item in items:
+        status = item.get("status")
+        
+        # Skip terminal statuses
+        if status in ("sent", "canceled"):
+            continue
+        
+        # Check if due
+        if status == "queued":
+            due_at_utc_str = item.get("due_at_utc")
+            if due_at_utc_str:
+                try:
+                    due_at_utc = datetime.strptime(due_at_utc_str, "%Y-%m-%d %H:%M")
+                    due_at_utc = due_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if due_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    continue
+        
+        elif status == "failed":
+            next_retry_at_utc_str = item.get("next_retry_at_utc")
+            if next_retry_at_utc_str:
+                try:
+                    next_retry_at_utc = datetime.strptime(next_retry_at_utc_str, "%Y-%m-%d %H:%M")
+                    next_retry_at_utc = next_retry_at_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    if next_retry_at_utc <= now_utc:
+                        due_items.append(item)
+                except ValueError:
+                    continue
+    
+    return due_items
+
+
 def write_queue_items(workspace: Path, items: list[dict[str, Any]]) -> None:
     """Write all items to the message queue JSONL file (atomic overwrite)"""
     path = queue_store_path(workspace)
@@ -3752,17 +3828,31 @@ def apply_action(workspace: Path, pillar_slug: str, meta: dict[str, Any], action
         return f"Created or updated project: {project_file}"
 
     if action.action_type == "add_reminder":
-        reminder = {
-            "id": f"rem-{uuid.uuid4().hex[:12]}",
-            "due_at": action.payload["due_at"],
-            "message": action.payload["message"],
-            "status": "pending",
-            "project_slug": action.payload.get("project_slug"),
-            "created_at": now_iso(tz_name),
-            "updated_at": now_iso(tz_name),
-        }
-        append_reminder(pillar_dir / "reminders.jsonl", reminder)
-        return f"Added reminder due {reminder['due_at']}: {reminder['message']}"
+        # Parse due_at to strict IST format
+        due_at_input = action.payload["due_at"]
+        channel_id = str(meta.get("discord_channel_id") or "")
+        
+        # Create queue item instead of legacy reminder
+        due_at_ist, due_at_utc = parse_strict_ist_datetime(due_at_input)
+        
+        queue_item = create_queue_item(
+            kind="reminder",
+            pillar_slug=pillar_slug,
+            channel_id=channel_id,
+            due_at_ist=due_at_ist,
+            due_at_utc=due_at_utc,
+            payload={
+                "message": action.payload["message"],
+                "project_slug": action.payload.get("project_slug"),
+            },
+        )
+        
+        # Add to queue
+        items = read_queue_items(workspace)
+        items.append(queue_item)
+        write_queue_items(workspace, items)
+        
+        return f"Added reminder to queue due {due_at_input}: {action.payload['message']}"
 
     if action.action_type == "contact_note":
         contact_file = ensure_contact_note(
@@ -7626,11 +7716,55 @@ def check_ready_reports(
 def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     scan_now = parse_iso(args.now) if args.now else now_in_tz(DEFAULT_TIMEZONE)
+    scan_now_utc = now_in_tz("UTC")
 
     due_actions: list[dict[str, Any]] = []
     policy, _policy_file = load_health_policy(workspace)
     blacklist = set(policy.get("channel_blacklist") or [])
 
+    # === CHECK QUEUE FOR DUE REMINDERS AND STAGED MESSAGES ===
+    due_queue_items = get_due_queue_items(workspace, scan_now_utc)
+    
+    for item in due_queue_items:
+        kind = item.get("kind")
+        pillar_slug = item.get("pillar_slug")
+        channel_id = item.get("channel_id")
+        
+        # Get pillar info
+        pillar_dir = workspace / "pillars" / "active" / pillar_slug
+        if not pillar_dir.exists():
+            continue
+        
+        meta, body = load_pillar_meta(pillar_dir)
+        display_name = str(meta.get("display_name") or pillar_slug)
+        
+        if kind == "reminder":
+            due_actions.append({
+                "type": "reminder",
+                "pillar_slug": pillar_slug,
+                "display_name": display_name,
+                "channel_id": channel_id,
+                "urgent": True,
+                "message": item.get("payload", {}).get("message"),
+                "due_at": item.get("due_at_ist"),
+                "queue_item_id": item.get("id"),
+            })
+        
+        elif kind == "copy_ready_message":
+            due_actions.append({
+                "type": "stage_message",
+                "pillar_slug": pillar_slug,
+                "display_name": display_name,
+                "channel_id": channel_id,
+                "urgent": True,
+                "stage_message_id": item.get("id"),
+                "due_at": item.get("due_at_ist"),
+                "copy_ready": item.get("payload", {}).get("message"),
+                "dispatch_command": f"qubit queue-message-dispatch --id {item.get('id')}",
+                "queue_item_id": item.get("id"),
+            })
+
+    # === LEGACY CHECK (for migration verification) ===
     for pillar_dir in list_active_pillars(workspace):
         meta, body = load_pillar_meta(pillar_dir)
         pillar_slug = str(meta.get("pillar_slug") or pillar_dir.name)
