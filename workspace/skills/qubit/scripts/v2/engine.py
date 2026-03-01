@@ -2476,7 +2476,7 @@ def create_event(
     date: str,
     time: str | None = None,
     status: str = "scheduled",
-    create_project: bool = True,
+    auto_create_project: bool = True,
     project_title: str | None = None,
 ) -> tuple[Path, Path | None]:
     """Create an event and optionally auto-create a preparation project."""
@@ -2542,7 +2542,7 @@ def create_event(
     
     # Optionally create preparation project
     project_file = None
-    if create_project:
+    if auto_create_project:
         proj_title = project_title or f"Prepare for {title}"
         proj_outcome = f"Successfully execute {title}"
         proj_due = f"{date}T{time}" if time else date
@@ -2604,7 +2604,7 @@ def cmd_add_event(args: argparse.Namespace) -> dict[str, Any]:
         date=args.date,
         time=args.time,
         status=args.status,
-        create_project=args.create_project,
+        auto_create_project=args.create_project,
         project_title=args.project_title,
     )
     
