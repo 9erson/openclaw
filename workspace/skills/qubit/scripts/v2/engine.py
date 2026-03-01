@@ -6243,6 +6243,75 @@ def cmd_sync_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def check_ready_reports(
+    pillar_dir: Path,
+    pillar_slug: str,
+    display_name: str,
+    local_now: datetime,
+    quiet: bool,
+) -> list[dict[str, Any]]:
+    """Check for reports that are ready to be sent."""
+    report_actions = []
+    
+    metadata = load_report_metadata(pillar_dir)
+    
+    # Check nightly reports
+    for date, entry in metadata.get("nightly", {}).items():
+        if not entry.get("ready_at"):
+            continue
+        if entry.get("sent_at"):
+            continue  # Already sent
+        
+        try:
+            ready_time = parse_iso(entry["ready_at"])
+        except Exception:
+            continue
+        
+        # Check if ready and not in quiet hours
+        if ready_time <= local_now and not quiet:
+            report_actions.append({
+                "type": "report",
+                "pillar_slug": pillar_slug,
+                "display_name": display_name,
+                "report_type": "nightly",
+                "date": date,
+                "ready_at": entry["ready_at"],
+                "attempts": entry.get("attempts", 0),
+                "urgent": False,
+                "dispatch_command": f"qubit {pillar_slug} send-report --type nightly --date {date}",
+            })
+    
+    # Check daily briefs (only send 6-8 AM local time)
+    local_hour = local_now.hour
+    if 6 <= local_hour < 8:  # Morning window for daily briefs
+        for date, entry in metadata.get("daily", {}).items():
+            if not entry.get("ready_at"):
+                continue
+            if entry.get("sent_at"):
+                continue  # Already sent
+            
+            try:
+                ready_time = parse_iso(entry["ready_at"])
+            except Exception:
+                continue
+            
+            # Check if ready
+            if ready_time <= local_now:
+                report_actions.append({
+                    "type": "report",
+                    "pillar_slug": pillar_slug,
+                    "display_name": display_name,
+                    "report_type": "daily",
+                    "date": date,
+                    "ready_at": entry["ready_at"],
+                    "attempts": entry.get("attempts", 0),
+                    "urgent": True,
+                    "dispatch_command": f"qubit {pillar_slug} send-report --type daily --date {date}",
+                })
+    
+    return report_actions
+
+
 def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).resolve()
     scan_now = parse_iso(args.now) if args.now else now_in_tz(DEFAULT_TIMEZONE)
@@ -6353,6 +6422,11 @@ def cmd_due_scan(args: argparse.Namespace) -> dict[str, Any]:
                     "prompt": build_loop_prompt(loop_name, display_name),
                 }
             )
+
+        # Check for ready reports
+        if not is_channel_blacklisted(meta, blacklist):
+            report_actions = check_ready_reports(pillar_dir, pillar_slug, display_name, local_now, quiet)
+            due_actions.extend(report_actions)
 
     return {
         "status": "ok",
