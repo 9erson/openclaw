@@ -37,6 +37,7 @@ DEFAULT_QUIET_HOURS_END = "07:00"
 DEFAULT_NIGHTLY_REPORT_TIME = "00:30"  # Generate nightly reports 00:00-02:00 IST
 DEFAULT_DAILY_BRIEF_GENERATE_TIME = "04:15"  # Generate daily briefs 04:00-04:30 IST
 DEFAULT_CLEANUP_TIME = "03:00"  # Cleanup old reports at 3 AM IST
+DEFAULT_NIGHTLY_AUDIT_TIME = "02:30"  # Old nightly audit jobs (will be removed in Phase 5)
 ONBOARDING_STATUSES = ("in_progress", "completed")
 ONBOARDING_STEPS = ("mission", "scope", "non_negotiables", "success_signals", "completed")
 MANIFESTO_PLACEHOLDER_MISSION = "Define the enduring mission for this pillar."
@@ -2207,6 +2208,58 @@ def allocate_nightly_audit_slots(
     if len(ordered) > window_size:
         raise QubitError(
             f"Cannot allocate unique nightly audit slots: {len(ordered)} pillars in a {window_size}-minute window"
+        )
+
+    assigned: dict[str, str] = {}
+    count = len(ordered)
+    for index, pillar_slug in enumerate(ordered):
+        offset = (index * window_size) // count
+        assigned[pillar_slug] = minutes_to_hhmm(start_minutes + offset)
+    return assigned
+
+
+def allocate_nightly_report_slots(
+    pillar_slugs: list[str],
+    start_minutes: int,
+    end_minutes: int,
+) -> dict[str, str]:
+    """Allocate time slots for nightly report generation within the window."""
+    ordered = sorted(pillar_slugs)
+    if not ordered:
+        return {}
+
+    window_size = end_minutes - start_minutes
+    if window_size <= 0:
+        raise QubitError("Nightly report window must have positive length")
+    if len(ordered) > window_size:
+        raise QubitError(
+            f"Cannot allocate unique nightly report slots: {len(ordered)} pillars in a {window_size}-minute window"
+        )
+
+    assigned: dict[str, str] = {}
+    count = len(ordered)
+    for index, pillar_slug in enumerate(ordered):
+        offset = (index * window_size) // count
+        assigned[pillar_slug] = minutes_to_hhmm(start_minutes + offset)
+    return assigned
+
+
+def allocate_daily_brief_generate_slots(
+    pillar_slugs: list[str],
+    start_minutes: int,
+    end_minutes: int,
+) -> dict[str, str]:
+    """Allocate time slots for daily brief generation within the window."""
+    ordered = sorted(pillar_slugs)
+    if not ordered:
+        return {}
+
+    window_size = end_minutes - start_minutes
+    if window_size <= 0:
+        raise QubitError("Daily brief generate window must have positive length")
+    if len(ordered) > window_size:
+        raise QubitError(
+            f"Cannot allocate unique daily brief generate slots: {len(ordered)} pillars in a {window_size}-minute window"
         )
 
     assigned: dict[str, str] = {}
@@ -6044,23 +6097,29 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
 
     policy, policy_file = load_health_policy(workspace)
 
-    # Check if both daily brief and nightly audit are disabled
+    # Check which integrity checks are enabled
     daily_brief_enabled = bool(policy.get("checks", {}).get("daily_brief_integrity", True))
     nightly_audit_enabled = bool(policy.get("checks", {}).get("nightly_audit_integrity", True))
+    nightly_report_enabled = bool(policy.get("checks", {}).get("nightly_report_integrity", True))
+    daily_brief_generate_enabled = bool(policy.get("checks", {}).get("daily_brief_generate_integrity", True))
+    cleanup_enabled = bool(policy.get("checks", {}).get("cleanup_integrity", True))
 
-    if not daily_brief_enabled and not nightly_audit_enabled:
+    # Check if at least one check is enabled
+    if not any([daily_brief_enabled, nightly_audit_enabled, nightly_report_enabled, daily_brief_generate_enabled, cleanup_enabled]):
         return {
             "status": "ok",
             "workflow": "heal",
             "mode": mode,
             "action": "skipped",
-            "reason": "both_daily_brief_and_nightly_audit_disabled",
+            "reason": "all_integrity_checks_disabled",
             "policy_file": str(policy_file),
         }
 
     target_timezone = str(policy["timezone"])
     daily_brief_start, daily_brief_end = daily_brief_window_bounds(policy)
     nightly_audit_start, nightly_audit_end = nightly_audit_window_bounds(policy)
+    nightly_report_start, nightly_report_end = nightly_report_window_bounds(policy)
+    daily_brief_gen_start, daily_brief_gen_end = daily_brief_generate_window_bounds(policy)
     blacklist = set(policy.get("channel_blacklist") or [])
 
     pillar_records: list[dict[str, Any]] = []
@@ -6101,7 +6160,7 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
 
     eligible_slugs = [record["pillar_slug"] for record in pillar_records if bool(record["eligible"])]
 
-    # Allocate daily brief slots
+    # Allocate time slots for all job types
     daily_brief_assignments = {}
     if daily_brief_enabled:
         daily_brief_assignments = allocate_daily_brief_slots(
@@ -6110,7 +6169,6 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             end_minutes=daily_brief_end,
         )
 
-    # Allocate nightly audit slots
     nightly_audit_assignments = {}
     if nightly_audit_enabled:
         nightly_audit_assignments = allocate_nightly_audit_slots(
@@ -6119,11 +6177,29 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             end_minutes=nightly_audit_end,
         )
 
+    nightly_report_assignments = {}
+    if nightly_report_enabled:
+        nightly_report_assignments = allocate_nightly_report_slots(
+            eligible_slugs,
+            start_minutes=nightly_report_start,
+            end_minutes=nightly_report_end,
+        )
+
+    daily_brief_gen_assignments = {}
+    if daily_brief_generate_enabled:
+        daily_brief_gen_assignments = allocate_daily_brief_generate_slots(
+            eligible_slugs,
+            start_minutes=daily_brief_gen_start,
+            end_minutes=daily_brief_gen_end,
+        )
+
     assignment_rows = [
         {
             "pillar_slug": pillar_slug,
             "daily_brief_time": daily_brief_assignments.get(pillar_slug, ""),
             "nightly_audit_time": nightly_audit_assignments.get(pillar_slug, ""),
+            "nightly_report_time": nightly_report_assignments.get(pillar_slug, ""),
+            "daily_brief_gen_time": daily_brief_gen_assignments.get(pillar_slug, ""),
             "timezone": target_timezone,
         }
         for pillar_slug in sorted(eligible_slugs)
@@ -6191,6 +6267,46 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
                         meta["nightly_audit_enabled"] = True
                         changed = True
                         fixes.append(f"Pillar '{pillar_slug}': enabled nightly audit")
+
+            # Update nightly report time
+            if nightly_report_enabled:
+                desired_report_time = nightly_report_assignments.get(pillar_slug, "")
+                current_report_time = str(meta.get("nightly_report_time") or "")
+                if current_report_time != desired_report_time:
+                    issues.append(
+                        f"Pillar '{pillar_slug}' nightly_report_time drift: expected {desired_report_time}, got {current_report_time or 'unset'}"
+                    )
+                    if not check_only:
+                        meta["nightly_report_time"] = desired_report_time
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': set nightly_report_time to {desired_report_time}")
+
+                if meta.get("nightly_report_enabled") is not True:
+                    issues.append(f"Pillar '{pillar_slug}' nightly report is disabled but should be enabled")
+                    if not check_only:
+                        meta["nightly_report_enabled"] = True
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': enabled nightly report")
+
+            # Update daily brief generation time
+            if daily_brief_generate_enabled:
+                desired_gen_time = daily_brief_gen_assignments.get(pillar_slug, "")
+                current_gen_time = str(meta.get("daily_brief_generate_time") or "")
+                if current_gen_time != desired_gen_time:
+                    issues.append(
+                        f"Pillar '{pillar_slug}' daily_brief_generate_time drift: expected {desired_gen_time}, got {current_gen_time or 'unset'}"
+                    )
+                    if not check_only:
+                        meta["daily_brief_generate_time"] = desired_gen_time
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': set daily_brief_generate_time to {desired_gen_time}")
+
+                if meta.get("daily_brief_generate_enabled") is not True:
+                    issues.append(f"Pillar '{pillar_slug}' daily brief generation is disabled but should be enabled")
+                    if not check_only:
+                        meta["daily_brief_generate_enabled"] = True
+                        changed = True
+                        fixes.append(f"Pillar '{pillar_slug}': enabled daily brief generation")
         else:
             if record["blacklisted"]:
                 if daily_brief_enabled and meta.get("daily_brief_enabled") is not False:
@@ -6228,9 +6344,12 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
     cron_data = load_cron_jobs(cron_path)
     cron_jobs = cron_data["jobs"]
 
-    # Separate tracking for daily brief and nightly audit jobs
+    # Separate tracking for all managed job types
     daily_brief_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
     nightly_audit_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    nightly_report_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    daily_brief_gen_jobs_by_slug: dict[str, list[dict[str, Any]]] = {}
+    cleanup_jobs: list[dict[str, Any]] = []
     unmanaged_jobs: list[dict[str, Any]] = []
 
     for job in cron_jobs:
@@ -6242,12 +6361,25 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             managed_slug = managed_job_pillar_slug(job)
             if managed_slug:
                 nightly_audit_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        elif is_managed_nightly_report_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if managed_slug:
+                nightly_report_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        elif is_managed_daily_brief_generate_job(job):
+            managed_slug = managed_job_pillar_slug(job)
+            if managed_slug:
+                daily_brief_gen_jobs_by_slug.setdefault(managed_slug, []).append(job)
+        elif is_managed_cleanup_job(job):
+            cleanup_jobs.append(job)
         else:
             unmanaged_jobs.append(job)
 
     daily_brief_before = sum(len(items) for items in daily_brief_jobs_by_slug.values())
     nightly_audit_before = sum(len(items) for items in nightly_audit_jobs_by_slug.values())
-    eligible_set = set(daily_brief_assignments.keys()) | set(nightly_audit_assignments.keys())
+    nightly_report_before = sum(len(items) for items in nightly_report_jobs_by_slug.values())
+    daily_brief_gen_before = sum(len(items) for items in daily_brief_gen_jobs_by_slug.values())
+    cleanup_before = len(cleanup_jobs)
+    eligible_set = set(daily_brief_assignments.keys()) | set(nightly_audit_assignments.keys()) | set(nightly_report_assignments.keys()) | set(daily_brief_gen_assignments.keys())
 
     # Check for issues
     if daily_brief_enabled:
@@ -6272,14 +6404,54 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             if pillar_slug not in nightly_audit_jobs_by_slug:
                 issues.append(f"Cron is missing managed nightly audit job for eligible pillar '{pillar_slug}'")
 
+    if nightly_report_enabled:
+        for pillar_slug, grouped_jobs in sorted(nightly_report_jobs_by_slug.items()):
+            if pillar_slug not in eligible_set:
+                issues.append(f"Cron has managed nightly report job for non-eligible pillar '{pillar_slug}'")
+            if len(grouped_jobs) > 1:
+                issues.append(f"Cron has duplicate managed nightly report jobs for pillar '{pillar_slug}'")
+
+        for pillar_slug in sorted(set(nightly_report_assignments.keys())):
+            if pillar_slug not in nightly_report_jobs_by_slug:
+                issues.append(f"Cron is missing managed nightly report job for eligible pillar '{pillar_slug}'")
+
+    if daily_brief_generate_enabled:
+        for pillar_slug, grouped_jobs in sorted(daily_brief_gen_jobs_by_slug.items()):
+            if pillar_slug not in eligible_set:
+                issues.append(f"Cron has managed daily brief generate job for non-eligible pillar '{pillar_slug}'")
+            if len(grouped_jobs) > 1:
+                issues.append(f"Cron has duplicate managed daily brief generate jobs for pillar '{pillar_slug}'")
+
+        for pillar_slug in sorted(set(daily_brief_gen_assignments.keys())):
+            if pillar_slug not in daily_brief_gen_jobs_by_slug:
+                issues.append(f"Cron is missing managed daily brief generate job for eligible pillar '{pillar_slug}'")
+
+    if cleanup_enabled:
+        if len(cleanup_jobs) > 1:
+            issues.append(f"Cron has {len(cleanup_jobs)} cleanup jobs (expected 1)")
+        elif cleanup_enabled and len(cleanup_jobs) == 0:
+            issues.append("Cron is missing cleanup job")
+
     daily_brief_after = daily_brief_before
     nightly_audit_after = nightly_audit_before
+    nightly_report_after = nightly_report_before
+    daily_brief_gen_after = daily_brief_gen_before
+    cleanup_after = cleanup_before
     daily_brief_created = 0
     daily_brief_updated = 0
     daily_brief_removed = 0
     nightly_audit_created = 0
     nightly_audit_updated = 0
     nightly_audit_removed = 0
+    nightly_report_created = 0
+    nightly_report_updated = 0
+    nightly_report_removed = 0
+    daily_brief_gen_created = 0
+    daily_brief_gen_updated = 0
+    daily_brief_gen_removed = 0
+    cleanup_created = 0
+    cleanup_updated = 0
+    cleanup_removed = 0
 
     if not check_only:
         rebuilt_jobs: list[dict[str, Any]] = list(unmanaged_jobs)
@@ -6328,6 +6500,64 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             nightly_audit_removed = nightly_audit_before - existing_kept
             rebuilt_jobs.extend(rebuilt_nightly_audit)
 
+        # Rebuild nightly report jobs
+        if nightly_report_enabled:
+            rebuilt_nightly_report: list[dict[str, Any]] = []
+            existing_kept = 0
+            for pillar_slug in sorted(nightly_report_assignments.keys()):
+                record = pillar_by_slug[pillar_slug]
+                desired_job = build_nightly_report_job(record["meta"])
+                existing_jobs = nightly_report_jobs_by_slug.get(pillar_slug, [])
+                if existing_jobs:
+                    existing_kept += 1
+                    existing_primary = existing_jobs[0]
+                    desired_job = preserve_runtime_fields(existing_primary, desired_job)
+                    if existing_primary != desired_job:
+                        nightly_report_updated += 1
+                else:
+                    nightly_report_created += 1
+                rebuilt_nightly_report.append(desired_job)
+
+            nightly_report_after = len(rebuilt_nightly_report)
+            nightly_report_removed = nightly_report_before - existing_kept
+            rebuilt_jobs.extend(rebuilt_nightly_report)
+
+        # Rebuild daily brief generation jobs
+        if daily_brief_generate_enabled:
+            rebuilt_daily_brief_gen: list[dict[str, Any]] = []
+            existing_kept = 0
+            for pillar_slug in sorted(daily_brief_gen_assignments.keys()):
+                record = pillar_by_slug[pillar_slug]
+                desired_job = build_daily_brief_generate_job(record["meta"])
+                existing_jobs = daily_brief_gen_jobs_by_slug.get(pillar_slug, [])
+                if existing_jobs:
+                    existing_kept += 1
+                    existing_primary = existing_jobs[0]
+                    desired_job = preserve_runtime_fields(existing_primary, desired_job)
+                    if existing_primary != desired_job:
+                        daily_brief_gen_updated += 1
+                else:
+                    daily_brief_gen_created += 1
+                rebuilt_daily_brief_gen.append(desired_job)
+
+            daily_brief_gen_after = len(rebuilt_daily_brief_gen)
+            daily_brief_gen_removed = daily_brief_gen_before - existing_kept
+            rebuilt_jobs.extend(rebuilt_daily_brief_gen)
+
+        # Rebuild cleanup job
+        if cleanup_enabled:
+            desired_cleanup = build_cleanup_job(target_timezone)
+            if cleanup_jobs:
+                existing_primary = cleanup_jobs[0]
+                desired_cleanup = preserve_runtime_fields(existing_primary, desired_cleanup)
+                if existing_primary != desired_cleanup:
+                    cleanup_updated += 1
+                cleanup_after = 1
+            else:
+                cleanup_created = 1
+                cleanup_after = 1
+            rebuilt_jobs.append(desired_cleanup)
+
         # Save if anything changed
         if rebuilt_jobs != cron_jobs:
             cron_data["jobs"] = rebuilt_jobs
@@ -6339,6 +6569,15 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             nightly_audit_created = 0
             nightly_audit_updated = 0
             nightly_audit_removed = 0
+            nightly_report_created = 0
+            nightly_report_updated = 0
+            nightly_report_removed = 0
+            daily_brief_gen_created = 0
+            daily_brief_gen_updated = 0
+            daily_brief_gen_removed = 0
+            cleanup_created = 0
+            cleanup_updated = 0
+            cleanup_removed = 0
 
         # Record fixes
         if daily_brief_created:
@@ -6353,6 +6592,22 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             fixes.append(f"Cron: reconciled {nightly_audit_updated} nightly audit job(s)")
         if nightly_audit_removed:
             fixes.append(f"Cron: removed {nightly_audit_removed} stale/duplicate nightly audit job(s)")
+        if nightly_report_created:
+            fixes.append(f"Cron: created {nightly_report_created} nightly report job(s)")
+        if nightly_report_updated:
+            fixes.append(f"Cron: reconciled {nightly_report_updated} nightly report job(s)")
+        if nightly_report_removed:
+            fixes.append(f"Cron: removed {nightly_report_removed} stale/duplicate nightly report job(s)")
+        if daily_brief_gen_created:
+            fixes.append(f"Cron: created {daily_brief_gen_created} daily brief generate job(s)")
+        if daily_brief_gen_updated:
+            fixes.append(f"Cron: reconciled {daily_brief_gen_updated} daily brief generate job(s)")
+        if daily_brief_gen_removed:
+            fixes.append(f"Cron: removed {daily_brief_gen_removed} stale/duplicate daily brief generate job(s)")
+        if cleanup_created:
+            fixes.append("Cron: created cleanup job")
+        if cleanup_updated:
+            fixes.append("Cron: reconciled cleanup job")
 
     action = "checked" if check_only else "applied"
     return {
@@ -6379,6 +6634,21 @@ def cmd_heal(args: argparse.Namespace) -> dict[str, Any]:
             "nightly_audit_created": nightly_audit_created,
             "nightly_audit_updated": nightly_audit_updated,
             "nightly_audit_removed": nightly_audit_removed,
+            "nightly_report_jobs_before": nightly_report_before,
+            "nightly_report_jobs_after": nightly_report_after,
+            "nightly_report_created": nightly_report_created,
+            "nightly_report_updated": nightly_report_updated,
+            "nightly_report_removed": nightly_report_removed,
+            "daily_brief_gen_jobs_before": daily_brief_gen_before,
+            "daily_brief_gen_jobs_after": daily_brief_gen_after,
+            "daily_brief_gen_created": daily_brief_gen_created,
+            "daily_brief_gen_updated": daily_brief_gen_updated,
+            "daily_brief_gen_removed": daily_brief_gen_removed,
+            "cleanup_jobs_before": cleanup_before,
+            "cleanup_jobs_after": cleanup_after,
+            "cleanup_created": cleanup_created,
+            "cleanup_updated": cleanup_updated,
+            "cleanup_removed": cleanup_removed,
             "issue_count": len(issues),
             "fix_count": len(fixes),
         },
