@@ -1,4 +1,7 @@
 agents/main/sessions/*.jsonl
+agents/main/sessions/*.jsonl.deleted.*
 openclaw.json
 openclaw.json.bak
 openclaw.json.bak.*
+delivery-queue/
+workspace/
