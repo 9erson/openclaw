@@ -34,59 +34,123 @@
       "updatedAtMs": 1772334040009
     },
     {
-      "jobId": "qubit-daily-brief-knights-of-st-joseph",
-      "name": "Qubit Daily Brief: knights-of-st-joseph",
-      "description": "managed-by=qubit;kind=daily-brief;pillar=knights-of-st-joseph",
+      "jobId": "qubit-nightly-report-knights-of-st-joseph",
+      "name": "Qubit Nightly Report: knights-of-st-joseph",
+      "description": "managed-by=qubit;kind=nightly-report;pillar=knights-of-st-joseph",
       "enabled": true,
       "deleteAfterRun": false,
       "schedule": {
         "kind": "cron",
-        "expr": "0 4 * * *",
+        "expr": "00 00 * * *",
         "tz": "Asia/Kolkata"
       },
       "sessionTarget": "isolated",
       "wakeMode": "next-heartbeat",
       "payload": {
         "kind": "agentTurn",
-        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'knights-of-st-joseph' (slug: knights-of-st-joseph). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
-      },
-      "delivery": {
-        "mode": "announce",
-        "channel": "discord",
-        "to": "channel:1476981651098570793",
-        "bestEffort": true
+        "message": "Autonomous workflow (cron): Generate nightly report for pillar 'knights-of-st-joseph' (slug: knights-of-st-joseph). Run: qubit knights-of-st-joseph generate-nightly-report --date yesterday"
       },
       "state": {
-        "nextRunAtMs": 1772317800000,
-        "runningAtMs": 1772332200025
+        "nextRunAtMs": 1772389800000
+      },
+      "delivery": {
+        "mode": "announce"
       }
     },
     {
-      "jobId": "qubit-daily-brief-santa-casa",
-      "name": "Qubit Daily Brief: santa-casa",
-      "description": "managed-by=qubit;kind=daily-brief;pillar=santa-casa",
+      "jobId": "qubit-nightly-report-santa-casa",
+      "name": "Qubit Nightly Report: santa-casa",
+      "description": "managed-by=qubit;kind=nightly-report;pillar=santa-casa",
       "enabled": true,
       "deleteAfterRun": false,
       "schedule": {
         "kind": "cron",
-        "expr": "30 4 * * *",
+        "expr": "00 01 * * *",
         "tz": "Asia/Kolkata"
       },
       "sessionTarget": "isolated",
       "wakeMode": "next-heartbeat",
       "payload": {
         "kind": "agentTurn",
-        "message": "Autonomous workflow (cron): run Qubit daily brief for pillar 'santa-casa' (slug: santa-casa). Do not ask conversational clarifications unless blocked. Focus on decisions needed, due reminders, blockers, and top 3 next actions."
-      },
-      "delivery": {
-        "mode": "announce",
-        "channel": "discord",
-        "to": "channel:1476842188699865250",
-        "bestEffort": true
+        "message": "Autonomous workflow (cron): Generate nightly report for pillar 'santa-casa' (slug: santa-casa). Run: qubit santa-casa generate-nightly-report --date yesterday"
       },
       "state": {
-        "nextRunAtMs": 1772319600000,
-        "runningAtMs": 1772334000012
+        "nextRunAtMs": 1772393400000
+      },
+      "delivery": {
+        "mode": "announce"
+      }
+    },
+    {
+      "jobId": "qubit-daily-brief-generate-knights-of-st-joseph",
+      "name": "Qubit Daily Brief Generate: knights-of-st-joseph",
+      "description": "managed-by=qubit;kind=daily-brief-generate;pillar=knights-of-st-joseph",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "00 04 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): Generate daily brief for pillar 'knights-of-st-joseph' (slug: knights-of-st-joseph). Run: qubit knights-of-st-joseph generate-daily-brief --date today"
+      },
+      "state": {
+        "nextRunAtMs": 1772404200000
+      },
+      "delivery": {
+        "mode": "announce"
+      }
+    },
+    {
+      "jobId": "qubit-daily-brief-generate-santa-casa",
+      "name": "Qubit Daily Brief Generate: santa-casa",
+      "description": "managed-by=qubit;kind=daily-brief-generate;pillar=santa-casa",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "15 04 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): Generate daily brief for pillar 'santa-casa' (slug: santa-casa). Run: qubit santa-casa generate-daily-brief --date today"
+      },
+      "state": {
+        "nextRunAtMs": 1772405100000
+      },
+      "delivery": {
+        "mode": "announce"
+      }
+    },
+    {
+      "jobId": "qubit-cleanup-reports",
+      "name": "Qubit Cleanup Old Reports",
+      "description": "managed-by=qubit;kind=cleanup",
+      "enabled": true,
+      "deleteAfterRun": false,
+      "schedule": {
+        "kind": "cron",
+        "expr": "00 03 * * *",
+        "tz": "Asia/Kolkata"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "next-heartbeat",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Autonomous workflow (cron): Clean up old reports. Run: qubit cleanup-reports --days 7"
+      },
+      "state": {
+        "nextRunAtMs": 1772400600000
+      },
+      "delivery": {
+        "mode": "announce"
       }
     }
   ]
