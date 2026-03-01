@@ -19,11 +19,19 @@
         "message": "qubit heal"
       },
       "state": {
-        "nextRunAtMs": 1772314200000
+        "nextRunAtMs": 1772400600000,
+        "lastRunAtMs": 1772334000012,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 39997,
+        "lastDeliveryStatus": "delivered",
+        "consecutiveErrors": 0,
+        "lastDelivered": true
       },
       "delivery": {
         "mode": "announce"
-      }
+      },
+      "updatedAtMs": 1772334040009
     },
     {
       "jobId": "qubit-daily-brief-knights-of-st-joseph",
@@ -49,7 +57,8 @@
         "bestEffort": true
       },
       "state": {
-        "nextRunAtMs": 1772317800000
+        "nextRunAtMs": 1772317800000,
+        "runningAtMs": 1772332200025
       }
     },
     {
@@ -76,7 +85,8 @@
         "bestEffort": true
       },
       "state": {
-        "nextRunAtMs": 1772319600000
+        "nextRunAtMs": 1772319600000,
+        "runningAtMs": 1772334000012
       }
     }
   ]

@@ -117,6 +117,9 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+**⏰ Timezone Rule:**
+When Gerson specifies a time (e.g., "4:30 AM" or "daily brief at 8:00"), he means **Asia/Kolkata (IST)**. Always convert to UTC before scheduling or storing. Example: 4:30 AM IST = 23:00 UTC (previous day). This applies to all scheduling, cron jobs, and time-based operations.
+
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
 **📝 Platform Formatting:**

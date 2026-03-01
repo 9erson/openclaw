@@ -55,6 +55,16 @@ Use this during onboarding turns.
 5. ONE casual emoji maximum, placed at the end, is optional.
 6. The question from the script is the complete message; do not add text before or after.
 
+### Mode 5: Daily Brief (Autonomous)
+
+When running daily briefs via cron/heartbeat:
+
+1. **Use the script output exactly** - Run `qubit daily-brief --pillar <slug>` and use the returned `message` field verbatim.
+2. **NO custom formats** - Do not create "Evening check-in", "Sunday Brief", or custom morning/evening variants.
+3. **NO time-of-day guessing** - The script output is the complete brief; do not add greetings based on time.
+4. **Send ONCE** - Deliver the brief to the channel exactly once, no retries or duplicate sends.
+5. **Daily only** - Daily briefs run every day (Mon-Sun). Do not substitute with weekly/Sunday variants.
+
 ### Mode 5: Classical Question
 
 Use this for `classical-questioning` turns outside onboarding (`project` or `topic`).
