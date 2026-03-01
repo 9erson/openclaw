@@ -1969,6 +1969,58 @@ def cq_build_llm_prompt(
     return prompt
 
 
+def cq_call_llm_for_question(
+    session: dict[str, Any],
+    user_answer: str,
+    workspace: Path,
+) -> dict[str, Any]:
+    """Call LLM to generate next question."""
+    # Import LLM helper
+    import sys
+    sys.path.insert(0, str(workspace / "skills" / "qubit" / "scripts"))
+    from llm_helper import call_llm_for_cq, validate_llm_response
+    
+    # Build prompt
+    prompt = cq_build_llm_prompt(session, user_answer, workspace)
+    
+    if not prompt:
+        return {
+            "action": "ask_followup",
+            "question": "Can you tell me more about that?",
+            "reasoning": "Failed to build prompt",
+            "coverage_update": {"grammar": 5, "logic": 0, "rhetoric": 0},
+            "total_coverage": 0,
+            "topic_progress": {
+                "current": "mission",
+                "next": "mission",
+            },
+        }
+    
+    # Call LLM
+    response = call_llm_for_cq(
+        prompt=prompt,
+        model="gpt-4o-mini",  # Fast, cheap model
+        max_tokens=1000,
+        temperature=0.7,
+    )
+    
+    # Validate response
+    if not validate_llm_response(response):
+        return {
+            "action": "ask_followup",
+            "question": "I'd like to understand more. Can you elaborate?",
+            "reasoning": "Invalid LLM response",
+            "coverage_update": {"grammar": 5, "logic": 0, "rhetoric": 0},
+            "total_coverage": 0,
+            "topic_progress": {
+                "current": "mission",
+                "next": "mission",
+            },
+        }
+    
+    return response
+
+
 def cq_apply_llm_response(
     session: dict[str, Any],
     llm_response: dict[str, Any],
@@ -2292,9 +2344,11 @@ def cq_answer_session(
     state_path: Path,
     answer: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Process user answer with LLM-driven questioning (Phase 3)."""
     if normalize_text(session.get("status")) == "paused":
         session["status"] = "in_progress"
 
+    # Apply answer to session
     accepted, parsed_value, slot, _level = cq_apply_answer_to_session(session, answer)
     event: dict[str, Any] = {
         "accepted": accepted,
@@ -2308,9 +2362,12 @@ def cq_answer_session(
         return session, event
 
     if not accepted:
+        # Answer not accepted - prepare followup
         cq_prepare_next_question(session, followup=True, force_slot=slot)
     else:
-        cq_prepare_next_question(session)
+        # Answer accepted - call LLM for next question
+        llm_response = cq_call_llm_for_question(session, answer, workspace)
+        cq_apply_llm_response(session, llm_response)
 
     if normalize_text(session.get("status")) == "paused":
         cq_pause_session(workspace, session, state_path)
