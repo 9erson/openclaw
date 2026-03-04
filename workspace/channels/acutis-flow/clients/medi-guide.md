@@ -52,8 +52,10 @@ Membership-based patient-provider matching service in Pune, India. Christy conne
 - Discuss profit-sharing model
 
 ### Action Items (Gerson)
-- [ ] Fix logo for Medi Guide website
-- [ ] Fix Christy's image on website
+- [ ] Add logo and Christy's image to PocketBase (self-hosted, already installed)
+- [ ] Update website links to use external PocketBase URLs
+
+**Context:** AI coding tools keep removing image files from repo and adding to .gitignore. Solution: host externally via PocketBase.
 
 ### Previous Meeting (2026-03-03)
 **2026-03-03 09:30 UTC** - Derick, Christy, Gerson *(completed for the day)*

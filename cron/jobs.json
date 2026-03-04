@@ -39,7 +39,7 @@
       "name": "Orchestrator",
       "enabled": true,
       "createdAtMs": 1772513930138,
-      "updatedAtMs": 1772586190844,
+      "updatedAtMs": 1772587172270,
       "schedule": {
         "kind": "cron",
         "expr": "*/15 * * * *",
@@ -57,15 +57,14 @@
         "to": "user:729703087031320577"
       },
       "state": {
-        "nextRunAtMs": 1772586900000,
-        "lastRunAtMs": 1772586022526,
+        "nextRunAtMs": 1772587800000,
+        "lastRunAtMs": 1772586900005,
         "lastRunStatus": "ok",
         "lastStatus": "ok",
-        "lastDurationMs": 168318,
+        "lastDurationMs": 272265,
         "lastDelivered": true,
         "lastDeliveryStatus": "delivered",
-        "consecutiveErrors": 0,
-        "runningAtMs": 1772586900004
+        "consecutiveErrors": 0
       }
     }
   ]

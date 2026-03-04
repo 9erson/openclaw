@@ -1164,7 +1164,7 @@
     "space": "1475377083667583019",
     "displayName": "discord:1475377083667583019#acutis-flow",
     "origin": {
-      "label": "discord:channel:1477913956805775401",
+      "label": "Guild #acutis-flow channel id:1477913956805775401",
       "provider": "discord",
       "surface": "discord",
       "chatType": "channel",
@@ -1173,7 +1173,7 @@
       "accountId": "default"
     },
     "sessionId": "8faf286c-70e1-4553-9c13-74dd56fd7bed",
-    "updatedAt": 1772584479891,
+    "updatedAt": 1772587112747,
     "deliveryContext": {
       "channel": "discord",
       "to": "channel:1477913956805775401",
@@ -1437,7 +1437,7 @@
     "contextTokens": 204800,
     "systemPromptReport": {
       "source": "run",
-      "generatedAt": 1772543940775,
+      "generatedAt": 1772587096391,
       "sessionId": "8faf286c-70e1-4553-9c13-74dd56fd7bed",
       "sessionKey": "agent:main:discord:channel:1477913956805775401",
       "provider": "zai",
@@ -1450,9 +1450,9 @@
         "sandboxed": false
       },
       "systemPrompt": {
-        "chars": 30949,
+        "chars": 30939,
         "projectContextChars": 13587,
-        "nonProjectContextChars": 17362
+        "nonProjectContextChars": 17352
       },
       "injectedWorkspaceFiles": [
         {
@@ -1736,11 +1736,11 @@
         ]
       }
     },
-    "inputTokens": 24741,
-    "outputTokens": 330,
-    "cacheRead": 35584,
+    "inputTokens": 25358,
+    "outputTokens": 349,
+    "cacheRead": 36224,
     "cacheWrite": 0,
-    "totalTokens": 35843,
+    "totalTokens": 36556,
     "totalTokensFresh": true
   },
   "agent:main:discord:channel:1477916233524580403": {
@@ -2925,7 +2925,7 @@
     "space": "1475377083667583019",
     "displayName": "discord:1475377083667583019#knights-of-st-joseph",
     "origin": {
-      "label": "discord:channel:1478055869496430622",
+      "label": "Guild #knights-of-st-joseph channel id:1478055869496430622",
       "provider": "discord",
       "surface": "discord",
       "chatType": "channel",
@@ -2934,7 +2934,7 @@
       "accountId": "default"
     },
     "sessionId": "ced80e55-fcf9-463c-a181-06cc90b40f6a",
-    "updatedAt": 1772586168026,
+    "updatedAt": 1772587273422,
     "deliveryContext": {
       "channel": "discord",
       "to": "channel:1478055869496430622",
@@ -3198,7 +3198,7 @@
     "contextTokens": 204800,
     "systemPromptReport": {
       "source": "run",
-      "generatedAt": 1772551448602,
+      "generatedAt": 1772587267950,
       "sessionId": "ced80e55-fcf9-463c-a181-06cc90b40f6a",
       "sessionKey": "agent:main:discord:channel:1478055869496430622",
       "provider": "zai",
@@ -3211,9 +3211,9 @@
         "sandboxed": false
       },
       "systemPrompt": {
-        "chars": 30949,
+        "chars": 30939,
         "projectContextChars": 13587,
-        "nonProjectContextChars": 17362
+        "nonProjectContextChars": 17352
       },
       "injectedWorkspaceFiles": [
         {
@@ -3497,11 +3497,11 @@
         ]
       }
     },
-    "inputTokens": 24835,
-    "outputTokens": 545,
-    "cacheRead": 35584,
+    "inputTokens": 25104,
+    "outputTokens": 74,
+    "cacheRead": 11328,
     "cacheWrite": 0,
-    "totalTokens": 36123,
+    "totalTokens": 36432,
     "totalTokensFresh": true
   },
   "agent:main:cron:44819451-6288-4ad9-a73c-3292e2c40c7f": {
@@ -4545,11 +4545,11 @@
     "authProfileOverrideSource": "auto",
     "authProfileOverrideCompactionCount": 0,
     "contextTokens": 204800,
-    "inputTokens": 28584,
-    "outputTokens": 4024,
-    "totalTokens": 43027,
+    "inputTokens": 10634,
+    "outputTokens": 1376,
+    "totalTokens": 25239,
     "totalTokensFresh": true,
-    "cacheRead": 511168,
+    "cacheRead": 189120,
     "cacheWrite": 0
   },
   "agent:main:cron:2d829c0b-fa33-4f9a-b8e9-2b3363749706:run:a5928759-8b54-4b64-b6df-e49625db4320": {
@@ -7819,7 +7819,7 @@
     "space": "1475377083667583019",
     "displayName": "discord:1475377083667583019#opus-dei",
     "origin": {
-      "label": "discord:channel:1478264303026176173",
+      "label": "Guild #opus-dei channel id:1478264303026176173",
       "provider": "discord",
       "surface": "discord",
       "chatType": "channel",
@@ -7828,7 +7828,7 @@
       "accountId": "default"
     },
     "sessionId": "d8071e34-9094-4837-9c5f-baa1ae1e2a8e",
-    "updatedAt": 1772582857470,
+    "updatedAt": 1772587305763,
     "deliveryContext": {
       "channel": "discord",
       "to": "channel:1478264303026176173",
@@ -29730,11 +29730,11 @@
     "authProfileOverrideSource": "auto",
     "authProfileOverrideCompactionCount": 0,
     "contextTokens": 204800,
-    "inputTokens": 28584,
-    "outputTokens": 4024,
-    "totalTokens": 43027,
+    "inputTokens": 10634,
+    "outputTokens": 1376,
+    "totalTokens": 25239,
     "totalTokensFresh": true,
-    "cacheRead": 511168,
+    "cacheRead": 189120,
     "cacheWrite": 0
   }
 }
