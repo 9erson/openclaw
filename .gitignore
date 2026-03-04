@@ -1,2 +1,4 @@
 .env
 credentials/
+openclaw.json
+openclaw.json.bak*
