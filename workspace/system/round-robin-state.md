@@ -15,8 +15,8 @@ Last updated: 2026-03-03 23:45 UTC
 
 ## Current State
 
-- **Last processed:** knights-of-st-joseph (2026-03-03 23:45 UTC)
-- **Next channel:** opus-dei
+- **Last processed:** opus-dei (2026-03-04 01:15 UTC)
+- **Next channel:** personal
 
 ## History
 

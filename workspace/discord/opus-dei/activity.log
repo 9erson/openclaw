@@ -41,6 +41,12 @@
       "action": "orchestrator_question",
       "question": "For the couples program 3rd iteration — do you have a sense of timing? Like, would you want to schedule it for a specific month, or does it depend on when Father Kevin is available?",
       "context": "Exploring couples program scheduling - timing and dependencies on Father Kevin availability"
+    },
+    {
+      "timestamp": "2026-03-04T01:15:00Z",
+      "action": "orchestrator_question",
+      "question": "With Father Kevin's visit coming up in about 3 weeks — looking at your agenda, which topics are highest priority to nail down face-to-face with him? Are there any decisions that really need his input before you can move forward on the in-person circles?",
+      "context": "Strategic planning for March 24-26 visit - prioritizing agenda items and identifying decision dependencies for in-person circles"
     }
   ]
 }
