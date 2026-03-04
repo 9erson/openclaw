@@ -1,0 +1,12 @@
+service: medi-guide
+type: custom
+location: ~/development/acutis-flow/medi-guide
+url: https://medi-guide.acutisflow.com
+port: 9101
+systemd: medi-guide
+
+commands:
+  build: bun run build
+  test: bun test
+  lint: bun run lint
+  typecheck: bun run typecheck

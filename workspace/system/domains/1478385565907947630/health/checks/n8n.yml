@@ -1,0 +1,7 @@
+service: n8n
+type: self-hosted
+url: https://n8n.acutisflow.com
+docker:
+  container: 2366c9bbc5df_n8n
+  image: n8nio/n8n
+current_version: 2.2.6

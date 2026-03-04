@@ -1,0 +1,11 @@
+# Experiment Changelog
+
+Append-only. Format:
+
+```
+[YYYY-MM-DD HH:MM UTC]
+Adjusted: <what was changed>
+Expected impact: <strategic outcome>
+```
+
+---

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "44819451-6288-4ad9-a73c-3292e2c40c7f",
+      "name": "Health Check",
+      "enabled": true,
+      "createdAtMs": 1772512747900,
+      "updatedAtMs": 1772586022526,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 1 * * *",
+        "tz": "UTC"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run health check: python3 /root/.openclaw/workspace/scripts/health-check.py --fix. Then summarize what was done."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "user:729703087031320577"
+      },
+      "state": {
+        "nextRunAtMs": 1772672400000,
+        "lastRunAtMs": 1772586000007,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 22519,
+        "lastDelivered": true,
+        "lastDeliveryStatus": "delivered",
+        "consecutiveErrors": 0
+      }
+    },
+    {
+      "id": "2d829c0b-fa33-4f9a-b8e9-2b3363749706",
+      "name": "Orchestrator",
+      "enabled": true,
+      "createdAtMs": 1772513930138,
+      "updatedAtMs": 1772586190844,
+      "schedule": {
+        "kind": "cron",
+        "expr": "*/15 * * * *",
+        "tz": "UTC"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "ORCHESTRATOR TICK: Read system/policy.md for rules. Select next channel in round-robin. Check current time (IST). If active hours (05:00-00:00 IST): read channel purpose.md, activity.log, recent messages. CRITICAL: Check activity.log for previous questions - NEVER repeat the same question, even if unanswered. Each tick = NEW question, different angle. Formulate ONE strategic question to move conversation toward purpose, send via message tool. If quiet hours (00:00-05:00 IST): pick task from system/tasks.md or channel tasks.md, execute silently. Log action to system/ops.log and channel activity.log."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "user:729703087031320577"
+      },
+      "state": {
+        "nextRunAtMs": 1772586900000,
+        "lastRunAtMs": 1772586022526,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 168318,
+        "lastDelivered": true,
+        "lastDeliveryStatus": "delivered",
+        "consecutiveErrors": 0
+      }
+    }
+  ]
+}

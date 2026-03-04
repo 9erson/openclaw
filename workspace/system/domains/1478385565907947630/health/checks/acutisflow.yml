@@ -1,0 +1,12 @@
+service: acutisflow
+type: custom
+location: /var/www/acutisflow.com
+url: https://acutisflow.com
+port: 58247
+systemd: acutisflow
+
+commands:
+  build: echo "No build step"
+  test: echo "No tests"
+  lint: echo "No lint"
+  typecheck: echo "No typecheck"

@@ -1,0 +1,6 @@
+service: traefik
+type: self-hosted
+docker:
+  container: traefik
+  image: traefik:v2.11
+current_version: 2.11

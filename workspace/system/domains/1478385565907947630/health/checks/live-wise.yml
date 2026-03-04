@@ -1,0 +1,12 @@
+service: live-wise
+type: custom
+location: ~/development/live-wise
+url: https://live-wise.acutisflow.com
+port: 9456
+systemd: live-wise
+
+commands:
+  build: bun run build
+  test: bun test
+  lint: bun run lint
+  typecheck: bun run typecheck

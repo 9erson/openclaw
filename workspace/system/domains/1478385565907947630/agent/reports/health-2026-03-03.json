@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-03-03T16:50:00Z",
+  "services": {
+    "medi-guide": {
+      "git_status": "clean",
+      "build": "pass",
+      "tests": "25 fail / 405 pass",
+      "lint": "not configured",
+      "typecheck": "not configured",
+      "http": 200
+    },
+    "live-wise": {
+      "git_status": "clean",
+      "build": "pass",
+      "tests": "timeout (needs investigation)",
+      "lint": "1 error",
+      "typecheck": "3 errors",
+      "http": 200
+    },
+    "acutisflow": {
+      "git_status": "not checked",
+      "build": "n/a",
+      "tests": "n/a",
+      "http": 200
+    },
+    "n8n": {
+      "current_version": "2.2.6",
+      "latest_version": "2.11.0",
+      "update_available": "major",
+      "http": 200
+    },
+    "pocketbase": {
+      "current_version": "0.25.8",
+      "latest_version": "0.36.5",
+      "update_available": "major",
+      "http": 200
+    },
+    "traefik": {
+      "current_version": "2.11.34",
+      "latest_version": "3.x available",
+      "update_available": "major",
+      "http": 200
+    }
+  }
+}

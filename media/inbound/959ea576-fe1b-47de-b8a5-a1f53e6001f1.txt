@@ -1,0 +1,13 @@
+So one of the activities it needs to do in the quiet hours is already mentioned experimentation, that's for sure. And that's basically looking at patterns and trying to customize the mode of operations in general but also per channel. The idea here is that it's kind of a retrospective, a nightly retrospective. Micro iteration it did the previous time or in the previous week or whatever, try and find patterns. Lots of thinking involved here.
+
+As a user, I don't need to see any of this, so you freely use that dedicated folder. There are many folders, one which is system wide and then each channel will have its own experimentation folder, so that folder you can do whatever you want with it. I forget what the folder name is.
+
+The manual.md, I think, is like the conclusion which gets tweaked every night based on your analysis. It's trying out slightly different things basically.
+
+Then there are each channel should have sources. Sources are kind of like these are sources of truth, basically. These can definitely not be edited. These are not supposed to be edited. These are supposed to be read only from you.
+
+The third group is the user artifacts. During the active hours, it's definitely going to be updated through the discussions with the user, with me. But in the night, you do have permission to reorganize the organization of that. You can add new files, remove files, the only thing you cannot do is speculate. It's not really experimentation, it's not R&D, you're just reorganizing existing data, making it better organize the folder structure, whatever, just so that it doesn't end up becoming completely disorganized.
+
+Again, a reminder here is that although I could, I have access to the VPS and I can see those files. Typically, I won't be actually using it. It's meant for your memory. And so it's almost like in the night, you're organizing your memory and defragging for each channel and also for things system wide.
+
+Does this make sense? Analyze the setup and then come up with the report and maybe if you have clarification questions about this

@@ -1,0 +1,23 @@
+1. Orchestra Cron Job Detecting the Time Window 
+2. It should be multiple things in order. Just think about what relevant information would be for system-wide and per channel.
+
+So it would definitely need to know what it's done before, like a log of its activities done before, so it doesn't redo the same thing, and kind of needs a list of what are the various activities it can do.
+
+So do some analysis and then come up with what this should be like 
+3. So think about it as answering the question: what is one small change I can make in the manual to improve the process for that particular channel? Also think that when you make too many changes, it's hard to see if something worked or didn't work. 
+
+It's good to be very clear and explicit about what is the one change you're making each night for that particular channel and then try it out. Then when you're doing the retrospective, you can analyze: "this was a change that was made two days ago, read all the messages for the day, compare it to the previous day." 
+
+All those kinds of experimentations can happen. And then based on that analysis, it can decide what change to make . a change could actually be tried this yesterday, but didn't really work. So let me switch to what was the previous day. That could be a change, or it could be everything works.
+
+Let me try this one slightly new thing. But again, we're not looking at drastic changes, we're looking at what small changes compound over time and it should be organic and self-growing . the other key is that, as a user, I don't really care what the details of the experiments. I could technically look at those files if I wanted to, but the idea is this is something that happens purely behind the scenes. 
+
+I don't even want to know what changes you made or what the data is trying. From my perspective, just knowing that you will improve over time is all I need to know 
+4. So what goes there depends on each channel. Each channel is really agnostic to the scope of the domain that is being tracked. 
+
+In almost all cases, there are projects, tasks, contacts, those kinds of things. That will completely be dependent on each channel. But it's all of the above, all the things you mentioned 
+5. So think about it. Agents.md happens every time a message is sent, every time the LLM responds. So things that should be there are only things that might be relevant every single time.
+
+Policy, on the other hand, is going to be loaded when the orchestrator cron job runs every 15 minutes or so. To answer your question, most of the things would be in the policy.md, but if it's more like a guideline, or like an index of where something is, then those things would go on the agents.md.
+
+We're looking for agents.md not to be very monolithic and huge

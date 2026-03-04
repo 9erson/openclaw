@@ -1,0 +1,39 @@
+# Activity Log
+
+## [2026-03-03 16:50 UTC] Initial Health Checks Complete
+- Created health check configs for all 6 services
+- Ran baseline checks
+- Found issues: medi-guide (25 failing tests), live-wise (typecheck + lint errors)
+- Found updates: n8n, PocketBase, Traefik all have major versions available
+- Saved report to reports/health-2026-03-03.json
+
+## [2026-03-03 14:14 UTC] Infrastructure Discovered
+- Mapped all services and subdomains
+- 5 active services: acutisflow.com, medi-guide, live-wise, pocketbase, n8n
+- 1 background job: telegram newsletter sender
+- Traefik reverse proxy handling all routing
+- Updated purpose.md and manual.md with full details
+
+## [2026-03-03 13:37 UTC] Channel Onboarded
+- Created domain structure
+- Defined purpose and responsibilities
+- Awaiting app list and CI/CD details from Gerson
+
+## [2026-03-03 13:45 UTC] Orchestrator Tick
+- Asked which app/subdomain to prioritize first (most critical or highest traffic)
+- Focused on starting with one app rather than full list to make initial setup manageable
+
+## [2026-03-03 14:51 UTC] Infrastructure Fixed
+- Health check revealed acutisflow.com unreachable (502 Bad Gateway)
+- Root cause: UFW firewall blocking port 58247 from Docker network
+- Added UFW rule: `sudo ufw allow from 172.19.0.0/16 to any port 58247`
+- Site now returns 200 via HTTPS
+- All 5 services now healthy and accessible
+
+## [2026-03-03 14:30 UTC] Orchestrator Tick
+- Asked about running baseline health check on all 5 active services to establish monitoring starting point
+- Different angle from previous CI/CD/test questions - focus on immediate actionable monitoring work
+
+## [2026-03-03 15:00 UTC] Orchestrator Tick
+- Asked about checking for updates on self-hosted apps (PocketBase, n8n) and setting up recurring update checks
+- New angle: proactive maintenance automation after successful health check baseline established
